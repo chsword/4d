@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>四维空间的三种画法</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #070910;
+    --panel: #10141f;
+    --line: #232b3d;
+    --fg: #dbe4f2;
+    --dim: #8b9ab3;
+    --accent: #6ab7ff;
+    --warn: #ffd24a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.6 ui-sans-serif, system-ui, "Noto Sans SC", sans-serif;
+  }
+  header {
+    padding: 14px 20px 0; display: flex; flex-wrap: wrap; gap: 14px;
+    align-items: baseline; border-bottom: 1px solid var(--line);
+  }
+  h1 { font-size: 16px; margin: 0; letter-spacing: .02em; }
+  header .sub { color: var(--dim); font-size: 12px; }
+  nav { display: flex; gap: 2px; margin-left: auto; }
+  .tab {
+    appearance: none; border: 1px solid transparent; border-bottom: none;
+    background: none; color: var(--dim); font: inherit; font-size: 13px;
+    padding: 8px 14px; border-radius: 8px 8px 0 0; cursor: pointer;
+  }
+  .tab:hover { color: var(--fg); }
+  .tab.on {
+    color: var(--fg); background: var(--panel);
+    border-color: var(--line); margin-bottom: -1px;
+  }
+  main { display: grid; grid-template-columns: 1fr 300px; gap: 0; height: calc(100vh - 62px); }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; height: auto; } }
+  #stage { position: relative; min-height: 420px; background: #0a0c14; }
+  #stage canvas { position: absolute; inset: 0; display: none; touch-action: none; }
+  #stage canvas.active { display: block; }
+  #hud {
+    position: absolute; left: 12px; top: 12px; display: none;
+    font: 12px/1.5 ui-monospace, monospace; color: #cfe0f5;
+    background: rgba(8,11,18,.72); padding: 6px 10px; border-radius: 6px;
+    border: 1px solid rgba(120,150,200,.2); pointer-events: none;
+  }
+  #hud .hint { color: var(--warn); }
+  aside {
+    border-left: 1px solid var(--line); background: var(--panel);
+    overflow-y: auto; padding: 16px 18px 40px;
+  }
+  @media (max-width: 860px) { aside { border-left: none; border-top: 1px solid var(--line); } }
+  .panel { display: none; }
+  .panel.on { display: block; }
+  .panel h2 { font-size: 13px; margin: 0 0 4px; letter-spacing: .04em; }
+  .panel p { color: var(--dim); font-size: 12.5px; margin: 0 0 14px; }
+  .row { display: flex; align-items: center; gap: 8px; margin: 7px 0; font-size: 12.5px; }
+  .row label { color: var(--dim); min-width: 74px; }
+  .row input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); }
+  .row .val { color: var(--fg); font: 11px ui-monospace, monospace; min-width: 34px; text-align: right; }
+  select, button {
+    background: #1a2132; color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 8px; font: inherit; font-size: 12.5px;
+  }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  .btns { display: flex; gap: 6px; margin: 10px 0 16px; }
+  fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px 12px; margin: 14px 0; }
+  legend { color: var(--dim); font-size: 11px; padding: 0 5px; }
+  kbd {
+    background: #1d2536; border: 1px solid #303b52; border-bottom-width: 2px;
+    border-radius: 4px; padding: 1px 5px; font: 11px ui-monospace, monospace; color: #cfe0f5;
+  }
+  .keys { display: grid; grid-template-columns: auto 1fr; gap: 5px 10px; font-size: 12px; align-items: center; }
+  .keys div:nth-child(even) { color: var(--dim); }
+  .note { font-size: 12px; color: var(--dim); border-left: 2px solid var(--accent); padding-left: 10px; margin: 14px 0; }
+  #fatal { display: none; padding: 12px; background: #3a1620; color: #ffc9d2; font: 12px ui-monospace, monospace; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>四维空间的三种画法</h1>
+  <span class="sub">第四个维度是空间维，不是时间</span>
+  <nav>
+    <button class="tab on" data-view="analogy">① 降维类比</button>
+    <button class="tab" data-view="projection">② 投影法</button>
+    <button class="tab" data-view="slice">③ 切片法 · 可走进去</button>
+  </nav>
+</header>
+
+<div id="fatal"></div>
+
+<main>
+  <div id="stage">
+    <canvas id="cv-analogy" class="active"></canvas>
+    <canvas id="cv-projection"></canvas>
+    <canvas id="cv-slice"></canvas>
+    <div id="hud"></div>
+  </div>
+
+  <aside>
+    <!-- ================= 类比 ================= -->
+    <section class="panel on" data-view="analogy">
+      <h2>① 先把同一件事在低一维做一遍</h2>
+      <p>人对四维没有直觉，对三维有。所以先看「立方体穿过一张平面，平面上的人看到什么」，
+         再把每个词加一维搬到四维 —— 这是理解四维唯一真正有效的路径。</p>
+
+      <div class="row">
+        <label>切割位置 k</label>
+        <input id="kslider" type="range" min="-1.8" max="1.8" step="0.01" value="0">
+      </div>
+      <div class="row"><label>自动扫过</label><input id="autok" type="checkbox" checked></div>
+      <div class="row"><label>物体自转</label><input id="spin" type="checkbox" checked></div>
+
+      <div class="note">
+        看 <b>B</b> 面板：平面人看到的多边形边数会从 3 跳到 4、5、6 再跳回去。
+        他会说「这个东西在变形」，但其实立方体什么都没变，只是它和平面的交在换位置。<br><br>
+        <b>C/D</b> 面板是同一件事升一维：我们看四维物体，看到的是一个会变形的<b>多面体</b>。
+        所谓「一个四维物体」，对我们来说就是 <b>D</b> 里那一整排三维形状的全体。
+      </div>
+
+      <fieldset>
+        <legend>对应关系</legend>
+        <div class="keys">
+          <div>平面人 (2D)</div><div>我们 (3D)</div>
+          <div>切割线 → 平面</div><div>切割面 → 超平面</div>
+          <div>截面是多边形</div><div>截面是多面体</div>
+          <div>看不见「上下」</div><div>看不见「第四维」</div>
+          <div>锁在盒子里出不来</div><div>锁在保险箱里出不来</div>
+        </div>
+      </fieldset>
+    </section>
+
+    <!-- ================= 投影 ================= -->
+    <section class="panel" data-view="projection">
+      <h2>② 投影法：4D → 3D → 2D</h2>
+      <p>屏幕是二维的，所以必须降两次维。好处是一眼看到整个形状的拓扑结构，
+         代价是尺寸和角度全被扭曲 —— 超立方体那 8 个立方体胞其实全等，图上却大小悬殊。</p>
+
+      <div class="row">
+        <label>图形</label>
+        <select id="shape" style="flex:1">
+          <option value="tesseract">8-cell 超立方体 (16/32)</option>
+          <option value="16cell">16-cell 超八面体 (8/24)</option>
+          <option value="24cell">24-cell 正二十四胞体 (24/96)</option>
+          <option value="5cell">5-cell 四维单纯形 (5/10)</option>
+          <option value="duoprism">6×6 双棱柱 (36/72)</option>
+          <option value="clifford">Clifford 环面</option>
+          <option value="hopf">Hopf 纤维化</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>投影方式</label>
+        <select id="projmode" style="flex:1">
+          <option value="perspective">4D 透视（盒中盒）</option>
+          <option value="ortho">4D 正交（丢掉 w）</option>
+          <option value="stereographic">S³ 立体投影</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>第四维视距</label>
+        <input id="eye" type="range" min="1.3" max="8" step="0.05" value="2.6">
+        <span class="val" id="eye-val">2.60</span>
+      </div>
+      <div class="row"><label>用色相编码 w</label><input id="colorw" type="checkbox" checked></div>
+
+      <fieldset>
+        <legend>六个旋转平面的角速度</legend>
+        <div class="row"><label>xy</label><input id="sp-xy" type="range" min="-1" max="1" step="0.01"><span class="val" id="spv-xy"></span></div>
+        <div class="row"><label>xz</label><input id="sp-xz" type="range" min="-1" max="1" step="0.01"><span class="val" id="spv-xz"></span></div>
+        <div class="row"><label>yz</label><input id="sp-yz" type="range" min="-1" max="1" step="0.01"><span class="val" id="spv-yz"></span></div>
+        <div class="row"><label>xw</label><input id="sp-xw" type="range" min="-1" max="1" step="0.01"><span class="val" id="spv-xw"></span></div>
+        <div class="row"><label>yw</label><input id="sp-yw" type="range" min="-1" max="1" step="0.01"><span class="val" id="spv-yw"></span></div>
+        <div class="row"><label>zw</label><input id="sp-zw" type="range" min="-1" max="1" step="0.01"><span class="val" id="spv-zw"></span></div>
+        <div class="btns">
+          <button id="proj-stop">全部停下</button>
+          <button id="proj-iso">等倾双旋转</button>
+        </div>
+      </fieldset>
+
+      <div class="note">
+        三维里旋转有一根<b>不动的轴</b>；四维里旋转有一个<b>不动的平面</b>。
+        四个轴两两组合出 6 个平面，所以 4D 旋转有 6 个自由度（3D 只有 3 个）。<br><br>
+        <b>xy / xz / yz</b> 是我们看得见的那三个「普通」旋转。
+        <b>xw / yw / zw</b> 才是把第四维搅进来的那三个 —— 只有它们会让形状看起来
+        「从自己内部翻出来」。<br><br>
+        <b>等倾双旋转</b>（xy 和 zw 同速）是四维独有的运动：没有任何一个点是静止的，
+        而且整个形状同时在两个互相垂直的平面里转。
+      </div>
+      <p style="font-size:12px">鼠标拖动 = 转第二级的三维相机；滚轮 = 缩放。</p>
+    </section>
+
+    <!-- ================= 切片 ================= -->
+    <section class="panel" data-view="slice">
+      <h2>③ 切片法：真的住进四维世界</h2>
+      <p id="slice-note">你的视网膜只能装下一个三维超平面。这里渲染的就是那个超平面
+         和四维世界的交 —— 没有任何形变，看到的是百分之百真实的局部几何。
+         代价是一次只看到一层，得靠沿第四维移动把全貌「扫」出来。</p>
+
+      <div class="row">
+        <label>w 坐标</label>
+        <input id="wslider" type="range" min="-5" max="5" step="0.01" value="0">
+      </div>
+      <div class="row"><label>第四维厚度染色</label><input id="wtint" type="checkbox" checked></div>
+      <div class="row"><label>X 光（看隔壁切片）</label><input id="xray" type="checkbox"></div>
+      <div class="btns"><button id="slice-reset">回到原点</button></div>
+
+      <fieldset>
+        <legend>操作</legend>
+        <div class="keys">
+          <div><kbd>点击画面</kbd></div><div>锁定鼠标，之后移动鼠标转头</div>
+          <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></div><div>在三维里走</div>
+          <div><kbd>Space</kbd> / <kbd>C</kbd></div><div>上 / 下</div>
+          <div><kbd>Q</kbd> / <kbd>E</kbd></div><div><b>沿第四维平移</b>（kata / ana）</div>
+          <div><kbd>Z</kbd> / <kbd>X</kbd></div><div>zw 平面转身：把「前」转向第四维</div>
+          <div><kbd>R</kbd> / <kbd>F</kbd></div><div>xw 平面转身：把「右」转向第四维</div>
+          <div><kbd>Shift</kbd></div><div>加速</div>
+          <div><kbd>Esc</kbd></div><div>解锁鼠标</div>
+        </div>
+      </fieldset>
+
+      <div class="note">
+        <b>先做这个</b>：站着别动，只按 <kbd>Q</kbd>/<kbd>E</kbd>。红球会凭空出现、长大、缩小、消失 ——
+        它是个四维超球（glome），你只是在扫过它的一层层切片。地板棋盘格也会翻色，
+        那是在告诉你「你确实在第四维上动了」。<br><br>
+        <b>再做这个</b>：往前走会撞到一堵灰墙。那堵墙只存在于 w ∈ (−1.6, 1.6)。
+        按 <kbd>E</kbd> 把 w 推到 3 左右，墙就整个消失了 —— 直接走过去，
+        会看到一个只存在于 w ≈ 3 的金色方块。<br>
+        这不是穿墙外挂，是四维生物看三维牢房的真实体验：它<b>根本没有第四面墙</b>。<br><br>
+        <b>然后开 X 光</b>：蓝雾标出「隔壁切片里有东西」的位置，隐藏的方块会先以雾的形式出现。<br><br>
+        <b>最后按 Z/X</b>：这是真正的四维转身。物体形状会以三维里不可能的方式变化 ——
+        因为你在换的不是视角，是整个视网膜所在的那张超平面。
+      </div>
+
+      <fieldset>
+        <legend>场景里有什么</legend>
+        <div class="keys">
+          <div style="color:#f25a5a">■</div><div>glome 超球：切片永远是球，半径随 w 变</div>
+          <div style="color:#5ab8fa">■</div><div>超立方体：切片是立方体（w∈[−1,1] 里恒定）</div>
+          <div style="color:#fac84d">■</div><div>双圆柱 duocylinder：切片在圆柱 / 圆环间变</div>
+          <div style="color:#8cf28c">■</div><div>球环面 spheritorus：切片从球壳裂成环面</div>
+          <div style="color:#d185fa">■</div><div>tiger：切片会分裂成两个独立的环</div>
+          <div style="color:#8c92a6">■</div><div>墙：只存在于 |w| &lt; 1.6</div>
+          <div style="color:#ffd633">■</div><div>方块：只存在于 w ≈ 3</div>
+          <div style="color:#bfc6cf">■</div><div>柱子：所有 w 都存在，当参照物</div>
+        </div>
+      </fieldset>
+    </section>
+  </aside>
+</main>
+
+<script src="js/m4.js"></script>
+<script src="js/polytopes.js"></script>
+<script src="js/view-projection.js"></script>
+<script src="js/view-slice.js"></script>
+<script src="js/view-analogy.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
