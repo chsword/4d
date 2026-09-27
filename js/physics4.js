@@ -287,6 +287,7 @@
        允许撤回前一次过量的支撑，否则平放盒子也会永远抖动。
        低速不反弹，避免重力的每次 kick 都触发微小弹跳。 */
     contacts.forEach(function (contact) {
+      contact.body = body;
       var r = contact.r, vn = body.pointVelocity(r)[1];
       contact.normalMass = effectiveMass(body, r, NORMAL);
       contact.normalImpulse = 0;
@@ -304,31 +305,81 @@
         }
       }
     });
-    for (var pass = 0; pass < 32; pass++) {
+    solveContacts(contacts, friction);
+    return true;
+  }
+
+  function contactVelocity(contact) {
+    var v = contact.body.pointVelocity(contact.r);
+    return contact.other ? M4.sub(v, contact.other.pointVelocity(contact.rOther)) : v;
+  }
+
+  function contactImpulse(contact, impulse) {
+    contact.body.applyImpulse(impulse, contact.r);
+    if (contact.other) contact.other.applyImpulse(M4.scale(impulse, -1), contact.rOther);
+  }
+
+  function contactMass(contact, direction) {
+    return effectiveMass(contact.body, contact.r, direction) +
+      (contact.other ? effectiveMass(contact.other, contact.rOther, direction) : 0);
+  }
+
+  // 地板仍使用原来的 32 轮、零目标速度；双体只扩展相对速度、两侧有效质量和作用反作用。
+  function solveContacts(contacts, friction, iterations) {
+    if (iterations === undefined) iterations = 32;
+    var impactChange = 0;
+    if (friction > 0 && contacts.some(function (c) { return c.other; })) {
+      contacts.forEach(function (c) {
+        if (c.tangentMass !== undefined) return;
+        var trace = 0;
+        for (var axis = 0; axis < 4; axis++) {
+          var direction = [0, 0, 0, 0]; direction[axis] = 1;
+          trace += contactMass(c, direction);
+        }
+        // 切向响应的 trace 是最大特征值上界。固定安全步长避免各向异性
+        // 接触在库仑球边界上因方向 Rayleigh 步长过大而形成二周期振荡。
+        c.tangentMass = trace - c.normalMass;
+      });
+    }
+    if (friction > 0 && contacts.some(function (c) { return c.other && !c.impactSolved; })) {
+      // 先完成双体恢复，再解耗散摩擦/支撑；不能同时要求保持恢复产生的
+      // 角向分离速度与静摩擦的零滑动速度。冲击冲量保留为摩擦预算，不撤销反弹。
+      impactChange = solveContacts(contacts, 0, iterations).change;
+      contacts.forEach(function (c) {
+        c.impactImpulse = c.normalImpulse;
+        c.normalImpulse = 0;
+        c.target = 0;
+        c.impactSolved = true;
+      });
+    }
+    for (var pass = 0; pass < iterations; pass++) {
       var change = 0;
       for (var i = 0; i < contacts.length; i++) {
-        var contact = contacts[i], r = contact.r, vn = body.pointVelocity(r)[1];
-        var nextNormal = Math.max(0, contact.normalImpulse - vn / contact.normalMass);
+        var contact = contacts[i], normal = contact.normal || NORMAL;
+        var vn = M4.dot(contactVelocity(contact), normal);
+        var target = contact.target === undefined ? 0 : contact.target;
+        var nextNormal = Math.max(0, contact.normalImpulse + (target - vn) / contact.normalMass);
         var deltaNormal = nextNormal - contact.normalImpulse;
-        body.applyImpulse(M4.scale(NORMAL, deltaNormal), r);
+        contactImpulse(contact, M4.scale(normal, deltaNormal));
         contact.normalImpulse = nextNormal;
-        var vt = body.pointVelocity(r);
-        vt[1] = 0;
+        var vt = contactVelocity(contact);
+        vt = M4.sub(vt, M4.scale(normal, M4.dot(vt, normal)));
         var speed = M4.len(vt), nextTangent = contact.tangentImpulse.slice();
         if (speed > 1e-10 && friction > 0) {
           var tangent = M4.scale(vt, 1 / speed);
-          nextTangent = M4.sub(nextTangent, M4.scale(tangent, speed / effectiveMass(body, r, tangent)));
+          nextTangent = M4.sub(nextTangent, M4.scale(tangent,
+            speed / (contact.tangentMass || contactMass(contact, tangent))));
         }
-        var magnitude = M4.len(nextTangent), limit = friction * nextNormal;
+        var magnitude = M4.len(nextTangent), limit = friction * (nextNormal + (contact.impactImpulse || 0));
         if (magnitude > limit) nextTangent = M4.scale(nextTangent, limit / magnitude);
         var deltaTangent = M4.sub(nextTangent, contact.tangentImpulse);
-        body.applyImpulse(deltaTangent, r);
+        contactImpulse(contact, deltaTangent);
         contact.tangentImpulse = nextTangent;
         change = Math.max(change, Math.abs(deltaNormal), M4.len(deltaTangent));
       }
       if (change < 1e-12) break;
     }
-    return true;
+    return { iterations: Math.min(pass + 1, iterations), change: Math.max(change, impactChange) };
   }
 
   function World4(options) {
@@ -338,11 +389,16 @@
     this.restitution = o.restitution === undefined ? 0.45 : o.restitution;
     this.friction = o.friction === undefined ? 0.6 : o.friction;
     this.floorY = o.floorY === undefined ? -1.5 : o.floorY;
+    this.floorEnabled = o.floor !== false;
   }
 
   World4.prototype.step = function (dt) {
     for (var i = 0; i < this.bodies.length; i++) {
       var body = this.bodies[i];
+      if (!this.floorEnabled) {
+        body.step(dt, this.gravity);
+        continue;
+      }
       var gap = floorContacts(body, this.floorY).separation;
       var saved = null;
       if (gap > 1e-7) {
@@ -377,6 +433,7 @@
       }
       collideFloor(body, this);
     }
+    if (global.Collide4 && this.bodies.length > 1) global.Collide4.solveWorld(this);
   };
 
   function restoreBody(body, saved) {
@@ -389,6 +446,7 @@
     dot6: dot6, mul6: mul6, inverseInertia: inverseInertia,
     inertiaBox4: inertiaBox4, inertiaGlome: inertiaGlome,
     effectiveMass: effectiveMass, floorContacts: floorContacts, collideFloor: collideFloor,
+    contactVelocity: contactVelocity, contactMass: contactMass, solveContacts: solveContacts,
     RigidBody4: RigidBody4, World4: World4
   };
   global.RigidBody4 = RigidBody4;

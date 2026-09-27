@@ -313,8 +313,8 @@
       <div class="note">
         <b>试试零重力</b>：把重力拉到 0，再重置。不同方向的半边长带来不同惯性，
         盒子的六个角速度分量会互相交换，但世界系角动量保持不变。<br><br>
-        只实现了<b>刚体与 y = −1.5 地板</b>的碰撞，没有刚体两两碰撞，也没有相机碰撞。
-        物体之间会穿过，不能堆叠。<span id="physics-capacity">最多保留 8 个刚体，满额后替换最早的一个。</span>
+        支持<b>盒子 / 超球两两碰撞、摩擦和地板多点支撑</b>；零恢复系数适合观察堆叠。
+        尚无完整连续碰撞检测和相机碰撞，高速投掷请减小步长。<span id="physics-capacity">最多保留 8 个刚体，满额后替换最早的一个。</span>
         离开页签时暂停模拟；暂停时仍可走动观察。
       </div>
     </section>
@@ -324,6 +324,7 @@
 <script src="js/m4.js"></script>
 <script src="js/polytopes.js"></script>
 <script src="js/physics4.js"></script>
+<script src="js/collide4.js"></script>
 <script src="js/view-projection.js"></script>
 <script src="js/view-slice.js"></script>
 <script src="js/view-analogy.js"></script>

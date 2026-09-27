@@ -68,21 +68,29 @@
     this.spawnCount = 0;
     this.world.bodies = [
       new RigidBody4({
-        halfSize: [0.55, 0.8, 0.45, 1.05], position: [-2.3, 1.2, -8, 0],
+        halfSize: [0.55, 0.8, 0.45, 1.05], position: [-2, 1.2, -8, 0],
+        velocity: [1.4, 0, 0, 0.1],
         orientation: M4.compose([M4.rotation('xy', 0.3), M4.rotation('xw', 0.5)]),
         angularVelocity: [0.7, -0.4, 1.1, 0.5, 0.9, -0.6]
       }),
       new RigidBody4({
         shape: 'glome', radius: 0.8, position: [0, 2.1, -8, 0.1],
-        velocity: [0.2, 0, 0, 0.15], angularVelocity: [0.2, 0, 0.5, 0.4, 0.6, 0]
+        velocity: [0, -0.2, 0, -0.1], angularVelocity: [0.2, 0, 0.5, 0.4, 0.6, 0]
       }),
       new RigidBody4({
-        halfSize: [0.9, 0.45, 0.65, 0.55], position: [2.4, 1.8, -9, -0.1],
+        halfSize: [0.9, 0.45, 0.65, 0.55], position: [2, 1.8, -8, -0.1],
+        velocity: [-1.4, 0, 0, 0],
         orientation: M4.rotation('yw', 0.6), angularVelocity: [-0.6, 0.8, 0.3, 0.7, -1, 0.4]
       }),
       new RigidBody4({
-        halfSize: [0.65, 0.8, 0.5, 0.9], position: [0, 2, -11, 2.8],
+        halfSize: [0.65, 0.8, 0.5, 0.9], position: [0, 4, -8, 0.2],
         angularVelocity: [0.5, 0.3, -0.8, 0.4, 0.7, 1]
+      }),
+      new RigidBody4({
+        halfSize: [0.8, 0.5, 0.8, 0.9], position: [-0.8, -1, -8, 0]
+      }),
+      new RigidBody4({
+        halfSize: [0.8, 0.5, 0.8, 0.9], position: [0.8, -1, -8, 0]
       })
     ].slice(0, this.maxBodies);
   };
