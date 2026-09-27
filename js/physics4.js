@@ -1,0 +1,395 @@
+/* physics4.js —— 四维刚体：角速度、力矩、角动量都属于 bivector 空间。
+ *
+ * 顺序与 M4.PLANES 一致：[xy, xz, xw, yz, yw, zw]。
+ * 正 xy 角速度把 +x 转向 +y，因此矩阵上三角是分量的负值；
+ * 这个符号保证 <r∧F, ω> = F·(Ωr)，冲量做功与转动能使用同一约定。
+ * 位置、速度、力、外力矩用世界系；姿态 R 把本体系送到世界系，
+ * angularVelocity 和 6×6 惯性矩阵用本体系。所有矩阵都是行主序。
+ */
+(function (global) {
+  'use strict';
+
+  var PLANES = M4.PLANES.slice();
+  var PAIRS = PLANES.map(function (p) { return [M4.AXIS[p[0]], M4.AXIS[p[1]]]; });
+  var ZERO6 = [0, 0, 0, 0, 0, 0];
+  var NORMAL = [0, 1, 0, 0];
+
+  function finiteArray(a, n, name) {
+    if (!a || a.length !== n || !Array.prototype.every.call(a, Number.isFinite)) {
+      throw new Error(name + ' 必须包含 ' + n + ' 个有限数');
+    }
+  }
+
+  function positive(x, name) {
+    if (!Number.isFinite(x) || x <= 0) throw new Error(name + ' 必须为有限正数');
+  }
+
+  function toMatrix(b) {
+    var m = new Array(16).fill(0);
+    for (var k = 0; k < 6; k++) {
+      var i = PAIRS[k][0], j = PAIRS[k][1];
+      m[i * 4 + j] = -b[k];
+      m[j * 4 + i] = b[k];
+    }
+    return m;
+  }
+
+  function fromMatrix(m) {
+    return PAIRS.map(function (p) { return (m[p[1] * 4 + p[0]] - m[p[0] * 4 + p[1]]) * 0.5; });
+  }
+
+  function wedge(a, b) {
+    return PAIRS.map(function (p) { return a[p[0]] * b[p[1]] - a[p[1]] * b[p[0]]; });
+  }
+
+  function commutator(a, b) {
+    var A = toMatrix(a), B = toMatrix(b), AB = M4.mul(A, B), BA = M4.mul(B, A);
+    return fromMatrix(AB.map(function (x, i) { return x - BA[i]; }));
+  }
+
+  function act(b, v) { return M4.mulVec(toMatrix(b), v); }
+
+  function transform(b, R) {
+    return fromMatrix(M4.mul(M4.mul(R, toMatrix(b)), M4.transpose(R)));
+  }
+
+  // M4.dot 只处理四个分量，不能拿来计算 bivector 的内积。
+  function dot6(a, b) {
+    var s = 0;
+    for (var i = 0; i < 6; i++) s += a[i] * b[i];
+    return s;
+  }
+
+  function mul6(m, v) {
+    var out = new Array(6).fill(0);
+    for (var i = 0; i < 6; i++) {
+      for (var j = 0; j < 6; j++) out[i] += m[i * 6 + j] * v[j];
+    }
+    return out;
+  }
+
+  function inverseInertia(m) {
+    finiteArray(m, 36, '惯性张量');
+    var L = new Array(36).fill(0), out = new Array(36).fill(0), i, j, k;
+    // Cholesky 同时验证正定性，拒绝不物理的输入，而不是让 NaN 进入场景。
+    for (i = 0; i < 6; i++) {
+      for (j = 0; j <= i; j++) {
+        if (Math.abs(m[i * 6 + j] - m[j * 6 + i]) > 1e-12 * Math.max(1, Math.abs(m[i * 6 + j]))) {
+          throw new Error('惯性张量必须对称');
+        }
+        var s = m[i * 6 + j];
+        for (k = 0; k < j; k++) s -= L[i * 6 + k] * L[j * 6 + k];
+        if (i === j) {
+          if (s <= 0) throw new Error('惯性张量必须正定');
+          L[i * 6 + j] = Math.sqrt(s);
+        } else {
+          L[i * 6 + j] = s / L[j * 6 + j];
+        }
+      }
+    }
+    for (var c = 0; c < 6; c++) {
+      var y = new Array(6).fill(0), x = new Array(6).fill(0);
+      for (i = 0; i < 6; i++) {
+        s = i === c ? 1 : 0;
+        for (j = 0; j < i; j++) s -= L[i * 6 + j] * y[j];
+        y[i] = s / L[i * 6 + i];
+      }
+      for (i = 5; i >= 0; i--) {
+        s = y[i];
+        for (j = i + 1; j < 6; j++) s -= L[j * 6 + i] * x[j];
+        x[i] = s / L[i * 6 + i];
+        out[i * 6 + c] = x[i];
+      }
+    }
+    return out;
+  }
+
+  function inertiaBox4(mass, halfSize) {
+    positive(mass, '质量');
+    finiteArray(halfSize, 4, '盒子半边长');
+    if (halfSize.some(function (h) { return h < 0; })) throw new Error('半边长不能为负');
+    /* 均匀盒子 <x_i²> = h_i²/3，交叉二阶矩为零。
+       T = 1/2 ∫|Ωx|² dm = 1/2 Σ_(i<j) m(h_i²+h_j²)/3 · ω_ij²。
+       因而主平面基底的惯性是 6×6 对角阵；允许 h_w=0 来检验三维退化。 */
+    var I = new Array(36).fill(0);
+    PAIRS.forEach(function (p, k) {
+      I[k * 6 + k] = mass * (halfSize[p[0]] * halfSize[p[0]] + halfSize[p[1]] * halfSize[p[1]]) / 3;
+    });
+    return I;
+  }
+
+  function inertiaGlome(mass, radius) {
+    positive(mass, '质量');
+    positive(radius, '超球半径');
+    /* 均匀实心 n 维球 <|x|²> = n r²/(n+2)，每个坐标 <x_i²> = r²/(n+2)。
+       每个旋转平面包含两个坐标：n=4 时 I_ij = 2mr²/6 = mr²/3，
+       不是三维实心球的 2mr²/5，也不是只在 S³ 表面分布质量的球壳。 */
+    var I = new Array(36).fill(0);
+    for (var k = 0; k < 6; k++) I[k * 6 + k] = mass * radius * radius / 3;
+    return I;
+  }
+
+  function RigidBody4(options) {
+    var o = options || {};
+    this.shape = o.shape === undefined ? 'box4' : o.shape;
+    if (this.shape !== 'box4' && this.shape !== 'glome') throw new Error('未知刚体形状：' + this.shape);
+    this.mass = o.mass === undefined ? 1 : o.mass;
+    positive(this.mass, '质量');
+    this.invMass = 1 / this.mass;
+    this.halfSize = (o.halfSize || [0.6, 0.6, 0.6, 0.6]).slice();
+    this.radius = o.radius === undefined ? 0.65 : o.radius;
+    var shapeInertia = this.shape === 'box4'
+      ? inertiaBox4(this.mass, this.halfSize) : inertiaGlome(this.mass, this.radius);
+    this.inertia = (o.inertia || shapeInertia).slice();
+    this.invInertia = inverseInertia(this.inertia);
+    this.position = (o.position || [0, 0, 0, 0]).slice();
+    this.velocity = (o.velocity || [0, 0, 0, 0]).slice();
+    this.orientation = (o.orientation || M4.ident()).slice();
+    this.angularVelocity = (o.angularVelocity || ZERO6).slice();
+    finiteArray(this.position, 4, '位置');
+    finiteArray(this.velocity, 4, '速度');
+    finiteArray(this.orientation, 16, '姿态');
+    finiteArray(this.angularVelocity, 6, '角速度');
+    var gram = M4.mul(M4.transpose(this.orientation), this.orientation);
+    if (gram.some(function (x, i) { return Math.abs(x - (i % 5 === 0 ? 1 : 0)) > 1e-8; })) {
+      throw new Error('姿态必须为正交矩阵');
+    }
+    this.force = [0, 0, 0, 0];
+    this.torque = ZERO6.slice();
+  }
+
+  RigidBody4.prototype.worldAngularMomentum = function () {
+    return transform(mul6(this.inertia, this.angularVelocity), this.orientation);
+  };
+
+  RigidBody4.prototype.kineticEnergy = function () {
+    return 0.5 * this.mass * M4.dot(this.velocity, this.velocity) +
+      0.5 * dot6(this.angularVelocity, mul6(this.inertia, this.angularVelocity));
+  };
+
+  RigidBody4.prototype.applyForce = function (force, point) {
+    finiteArray(force, 4, '力');
+    if (point !== undefined) finiteArray(point, 4, '力的作用点');
+    this.force = M4.add(this.force, force);
+    if (point !== undefined) {
+      var t = wedge(M4.sub(point, this.position), force);
+      for (var k = 0; k < 6; k++) this.torque[k] += t[k];
+    }
+  };
+
+  RigidBody4.prototype.applyTorque = function (torque) {
+    finiteArray(torque, 6, '世界系力矩');
+    for (var k = 0; k < 6; k++) this.torque[k] += torque[k];
+  };
+
+  RigidBody4.prototype.inverseInertiaWorld = function (torque) {
+    var R = this.orientation;
+    return transform(mul6(this.invInertia, transform(torque, M4.transpose(R))), R);
+  };
+
+  RigidBody4.prototype.pointVelocity = function (r) {
+    return M4.add(this.velocity, act(transform(this.angularVelocity, this.orientation), r));
+  };
+
+  // r 是相对质心的世界系力臂，不是绝对接触位置。
+  RigidBody4.prototype.applyImpulse = function (impulse, r) {
+    finiteArray(impulse, 4, '冲量');
+    finiteArray(r, 4, '力臂');
+    this.velocity = M4.add(this.velocity, M4.scale(impulse, this.invMass));
+    var Rt = M4.transpose(this.orientation);
+    var dw = mul6(this.invInertia, wedge(M4.mulVec(Rt, r), M4.mulVec(Rt, impulse)));
+    for (var k = 0; k < 6; k++) this.angularVelocity[k] += dw[k];
+  };
+
+  function shifted(R, dR, h) {
+    return R.map(function (x, i) { return x + dR[i] * h; });
+  }
+
+  RigidBody4.prototype.step = function (dt, gravity) {
+    if (!Number.isFinite(dt) || dt < 0) throw new Error('时间步长必须为有限非负数');
+    if (gravity === undefined) gravity = 9.81;
+    if (!Number.isFinite(gravity) || gravity < 0) throw new Error('重力必须为有限非负数');
+    if (dt === 0) return;
+    var L = this.worldAngularMomentum(), k;
+    for (k = 0; k < 6; k++) L[k] += dt * this.torque[k];
+    for (k = 0; k < 4; k++) {
+      this.velocity[k] += dt * (this.force[k] * this.invMass - (k === 1 ? gravity : 0));
+      this.position[k] += dt * this.velocity[k];
+    }
+
+    /* 半隐式 kick-drift：先更新世界系动量，再积分姿态。
+       直接用 Euler 更新 ω 会持续制造转动能，缩小步长只能推迟爆炸。
+       改用 R'=RΩ、L_body=RᵀL_world R 的 RK4，末端正交化后重新求 ω。
+       对 L_body 求导正好得到 Iω' = τ - [Ω,L_body]，不是省略陀螺项。
+       世界 L 的保持是代数恒等式，能量误差由四阶姿态积分控制，
+       没有按初始能量缩放速度这样的非物理补丁。 */
+    var invI = this.invInertia, Lmat = toMatrix(L);
+    function derivative(R) {
+      var lb = fromMatrix(M4.mul(M4.mul(M4.transpose(R), Lmat), R));
+      return M4.mul(R, toMatrix(mul6(invI, lb)));
+    }
+    // 限制单步转角，让投掷时较大的角速度也落在 RK4 的稳定区间。
+    var omega = mul6(invI, transform(L, M4.transpose(this.orientation)));
+    var count = Math.max(1, Math.ceil(dt * Math.sqrt(dot6(omega, omega)) / 0.05));
+    var h = dt / count;
+    for (var s = 0; s < count; s++) {
+      var R = this.orientation;
+      var a = derivative(R), b = derivative(shifted(R, a, h / 2));
+      var c = derivative(shifted(R, b, h / 2)), d = derivative(shifted(R, c, h));
+      this.orientation = M4.orthonormalize(R.map(function (x, i) {
+        return x + h * (a[i] + 2 * b[i] + 2 * c[i] + d[i]) / 6;
+      }));
+    }
+    this.angularVelocity = mul6(invI, transform(L, M4.transpose(this.orientation)));
+    this.force = [0, 0, 0, 0];
+    this.torque = ZERO6.slice();
+  };
+
+  function effectiveMass(body, r, direction) {
+    return body.invMass + M4.dot(direction, act(body.inverseInertiaWorld(wedge(r, direction)), r));
+  }
+
+  function floorContacts(body, floorY) {
+    if (floorY === undefined) floorY = -1.5;
+    var contacts = [], deepest = 0, separation = Infinity, r, depth;
+    if (body.shape === 'glome') {
+      r = [0, -body.radius, 0, 0];
+      depth = floorY - body.position[1] + body.radius;
+      if (depth >= -1e-7) contacts.push({ r: r, depth: depth });
+      deepest = Math.max(0, depth);
+      separation = -depth;
+    } else {
+      for (var mask = 0; mask < 16; mask++) {
+        var v = body.halfSize.map(function (h, i) { return (mask & (1 << i)) ? h : -h; });
+        r = M4.mulVec(body.orientation, v);
+        depth = floorY - body.position[1] - r[1];
+        if (depth >= -1e-7) contacts.push({ r: r, depth: depth });
+        deepest = Math.max(deepest, depth);
+        separation = Math.min(separation, -depth);
+      }
+    }
+    return { contacts: contacts, depth: deepest, separation: separation };
+  }
+
+  function collideFloor(body, options) {
+    var o = options || {}, floorY = o.floorY === undefined ? -1.5 : o.floorY;
+    var restitution = o.restitution === undefined ? 0.45 : o.restitution;
+    var friction = o.friction === undefined ? 0.6 : o.friction;
+    if (!Number.isFinite(floorY) || !Number.isFinite(restitution) || restitution < 0 || restitution > 1 ||
+        !Number.isFinite(friction) || friction < 0) throw new Error('地板或碰撞参数无效');
+    var hit = floorContacts(body, floorY), contacts = hit.contacts;
+    if (!contacts.length) return false;
+    // 位置修正不掺入速度冲量，避免把穿透误差变成一次人为弹射。
+    body.position[1] += hit.depth;
+    /* 最深点决定投影距离，但平面接触必须保留共面的其它顶点：
+       只解一个角点会给平放的盒子凭空制造翻滚。
+       反弹逐点处理，每次冲量不增加动能；支撑另用累计冲量迭代，
+       允许撤回前一次过量的支撑，否则平放盒子也会永远抖动。
+       低速不反弹，避免重力的每次 kick 都触发微小弹跳。 */
+    contacts.forEach(function (contact) {
+      var r = contact.r, vn = body.pointVelocity(r)[1];
+      contact.normalMass = effectiveMass(body, r, NORMAL);
+      contact.normalImpulse = 0;
+      contact.tangentImpulse = [0, 0, 0, 0];
+      if (restitution > 0 && vn < -0.5) {
+        var jn = -(1 + restitution) * vn / contact.normalMass;
+        body.applyImpulse(M4.scale(NORMAL, jn), r);
+        var vt = body.pointVelocity(r);
+        vt[1] = 0;
+        var speed = M4.len(vt);
+        if (speed > 1e-10 && friction > 0) {
+          var tangent = M4.scale(vt, 1 / speed);
+          body.applyImpulse(M4.scale(tangent,
+            -Math.min(friction * jn, speed / effectiveMass(body, r, tangent))), r);
+        }
+      }
+    });
+    for (var pass = 0; pass < 32; pass++) {
+      var change = 0;
+      for (var i = 0; i < contacts.length; i++) {
+        var contact = contacts[i], r = contact.r, vn = body.pointVelocity(r)[1];
+        var nextNormal = Math.max(0, contact.normalImpulse - vn / contact.normalMass);
+        var deltaNormal = nextNormal - contact.normalImpulse;
+        body.applyImpulse(M4.scale(NORMAL, deltaNormal), r);
+        contact.normalImpulse = nextNormal;
+        var vt = body.pointVelocity(r);
+        vt[1] = 0;
+        var speed = M4.len(vt), nextTangent = contact.tangentImpulse.slice();
+        if (speed > 1e-10 && friction > 0) {
+          var tangent = M4.scale(vt, 1 / speed);
+          nextTangent = M4.sub(nextTangent, M4.scale(tangent, speed / effectiveMass(body, r, tangent)));
+        }
+        var magnitude = M4.len(nextTangent), limit = friction * nextNormal;
+        if (magnitude > limit) nextTangent = M4.scale(nextTangent, limit / magnitude);
+        var deltaTangent = M4.sub(nextTangent, contact.tangentImpulse);
+        body.applyImpulse(deltaTangent, r);
+        contact.tangentImpulse = nextTangent;
+        change = Math.max(change, Math.abs(deltaNormal), M4.len(deltaTangent));
+      }
+      if (change < 1e-12) break;
+    }
+    return true;
+  }
+
+  function World4(options) {
+    var o = options || {};
+    this.bodies = [];
+    this.gravity = o.gravity === undefined ? 9.81 : o.gravity;
+    this.restitution = o.restitution === undefined ? 0.45 : o.restitution;
+    this.friction = o.friction === undefined ? 0.6 : o.friction;
+    this.floorY = o.floorY === undefined ? -1.5 : o.floorY;
+  }
+
+  World4.prototype.step = function (dt) {
+    for (var i = 0; i < this.bodies.length; i++) {
+      var body = this.bodies[i];
+      var gap = floorContacts(body, this.floorY).separation;
+      var saved = null;
+      if (gap > 1e-7) {
+        saved = {
+          position: body.position.slice(), velocity: body.velocity.slice(),
+          orientation: body.orientation.slice(), angularVelocity: body.angularVelocity.slice(),
+          force: body.force.slice(), torque: body.torque.slice()
+        };
+      }
+      body.step(dt, this.gravity);
+      if (saved && floorContacts(body, this.floorY).depth > 0) {
+        /* 悬空落地时若走完整步再抬回地面，弹性反弹会获得额外势能。
+           在同一个半隐式离散轨迹上二分落地时刻，再积分余下时间；
+           已在接触中的支撑仍交给接触求解器，不做零时长碰撞循环。
+           这里只处理步首在外、步末穿透的过零，不是完整的旋转 CCD。 */
+        var lo = 0, hi = dt;
+        for (var j = 0; j < 32; j++) {
+          restoreBody(body, saved);
+          var mid = (lo + hi) / 2;
+          body.step(mid, this.gravity);
+          if (floorContacts(body, this.floorY).depth > 0) hi = mid;
+          else lo = mid;
+        }
+        restoreBody(body, saved);
+        body.step(hi, this.gravity);
+        collideFloor(body, this);
+        if (dt > hi) {
+          body.force = saved.force.slice();
+          body.torque = saved.torque.slice();
+          body.step(dt - hi, this.gravity);
+        }
+      }
+      collideFloor(body, this);
+    }
+  };
+
+  function restoreBody(body, saved) {
+    Object.keys(saved).forEach(function (key) { body[key] = saved[key].slice(); });
+  }
+
+  global.Physics4 = {
+    PLANES: PLANES, toMatrix: toMatrix, fromMatrix: fromMatrix,
+    wedge: wedge, commutator: commutator, act: act, transform: transform,
+    dot6: dot6, mul6: mul6, inverseInertia: inverseInertia,
+    inertiaBox4: inertiaBox4, inertiaGlome: inertiaGlome,
+    effectiveMass: effectiveMass, floorContacts: floorContacts, collideFloor: collideFloor,
+    RigidBody4: RigidBody4, World4: World4
+  };
+  global.RigidBody4 = RigidBody4;
+})(window);

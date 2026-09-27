@@ -26,6 +26,23 @@
     'void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }'
   ].join('\n');
 
+  // 场景与切片渲染分开，物理沙盒复用同一套法线、光照、雾和相机约定。
+  var DEFAULT_MAP = [
+    'vec2 map(vec4 p){',
+    '  vec2 res = vec2(p.y + 1.5, 1.0);',
+    '  res = opU(res, vec2(sdSphere4(p - vec4(-8.0, 0.3, -10.0, 0.0), 1.45), 2.0));',
+    '  res = opU(res, vec2(sdBox4(p - vec4(-4.0, 0.3, -10.0, 0.0), vec4(1.1)), 3.0));',
+    '  res = opU(res, vec2(sdDuocylinder(p - vec4(0.0, 0.3, -10.0, 0.0), 1.15, 1.15), 4.0));',
+    '  res = opU(res, vec2(sdSpheritorus(p - vec4(4.0, 0.3, -10.0, 0.0), 1.15, 0.45), 5.0));',
+    '  res = opU(res, vec2(sdTiger(p - vec4(8.0, 0.3, -10.0, 0.0), 1.0, 1.0, 0.34), 6.0));',
+    '  res = opU(res, vec2(sdBox4(p - vec4(0.0, 0.5, -17.0, 0.0), vec4(9.0, 2.0, 0.3, 1.6)), 7.0));',
+    '  res = opU(res, vec2(sdBox4(p - vec4(0.0, -0.7, -21.0, 3.0), vec4(0.85)), 8.0));',
+    '  res = opU(res, vec2(sdPillar(p - vec4(-12.0, 1.0, -6.0, 0.0), 0.25, 2.5), 9.0));',
+    '  res = opU(res, vec2(sdPillar(p - vec4( 12.0, 1.0, -6.0, 0.0), 0.25, 2.5), 9.0));',
+    '  return res;',
+    '}'
+  ].join('\n');
+
   /* GLSL 源码必须是纯 ASCII —— GLSL ES 规定的字符集不含中文，
      ANGLE 等实现会连注释里的非 ASCII 字符一起报错。所以着色器里的说明
      都搬到这里：
@@ -56,6 +73,7 @@
     'uniform float uFocal;',
     'uniform float uWTint;',
     'uniform float uXRay;',
+    '/* SCENE_UNIFORMS */',
     '',
     'const float FAR = 70.0;',
     '',
@@ -81,23 +99,7 @@
     '// no vector ternary: some old GLSL drivers reject "c ? vecA : vecB"',
     'vec2 opU(vec2 a, vec2 b){ if (a.x < b.x) return a; return b; }',
     '',
-    '// returns (distance, materialId); p is in 4D world coordinates',
-    'vec2 map(vec4 p){',
-    '  vec2 res = vec2(p.y + 1.5, 1.0);',
-    '  res = opU(res, vec2(sdSphere4(p - vec4(-8.0, 0.3, -10.0, 0.0), 1.45), 2.0));',
-    '  res = opU(res, vec2(sdBox4(p - vec4(-4.0, 0.3, -10.0, 0.0), vec4(1.1)), 3.0));',
-    '  res = opU(res, vec2(sdDuocylinder(p - vec4(0.0, 0.3, -10.0, 0.0), 1.15, 1.15), 4.0));',
-    '  res = opU(res, vec2(sdSpheritorus(p - vec4(4.0, 0.3, -10.0, 0.0), 1.15, 0.45), 5.0));',
-    '  res = opU(res, vec2(sdTiger(p - vec4(8.0, 0.3, -10.0, 0.0), 1.0, 1.0, 0.34), 6.0));',
-    '  // wall: exists only for |w| < 1.6, so you can walk around it along w',
-    '  res = opU(res, vec2(sdBox4(p - vec4(0.0, 0.5, -17.0, 0.0), vec4(9.0, 2.0, 0.3, 1.6)), 7.0));',
-    '  // prize box: exists only near w = 3',
-    '  res = opU(res, vec2(sdBox4(p - vec4(0.0, -0.7, -21.0, 3.0), vec4(0.85)), 8.0));',
-    '  // pillars: present at every w, used as landmarks',
-    '  res = opU(res, vec2(sdPillar(p - vec4(-12.0, 1.0, -6.0, 0.0), 0.25, 2.5), 9.0));',
-    '  res = opU(res, vec2(sdPillar(p - vec4( 12.0, 1.0, -6.0, 0.0), 0.25, 2.5), 9.0));',
-    '  return res;',
-    '}',
+    '/* SCENE_MAP */',
     '',
     'vec4 lift(vec3 q){ return uCam + q.x * uAx + q.y * uAy + q.z * uAz; }',
     '',
@@ -213,7 +215,8 @@
     return s;
   }
 
-  function SliceView(canvas) {
+  function SliceView(canvas, scene) {
+    scene = scene || {};
     this.canvas = canvas;
     this.gl = canvas.getContext('webgl', { antialias: false, alpha: false })
            || canvas.getContext('experimental-webgl');
@@ -222,7 +225,9 @@
 
     var prog = gl.createProgram();
     gl.attachShader(prog, compile(gl, gl.VERTEX_SHADER, VERT));
-    gl.attachShader(prog, compile(gl, gl.FRAGMENT_SHADER, FRAG));
+    var frag = FRAG.replace('/* SCENE_UNIFORMS */', scene.uniforms || '')
+      .replace('/* SCENE_MAP */', scene.map || DEFAULT_MAP);
+    gl.attachShader(prog, compile(gl, gl.FRAGMENT_SHADER, frag));
     gl.linkProgram(prog);
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
       throw new Error(gl.getProgramInfoLog(prog));
@@ -258,10 +263,21 @@
   SliceView.prototype._bind = function () {
     var self = this, cv = this.canvas;
     cv.addEventListener('click', function () {
-      if (!self.locked && cv.requestPointerLock) cv.requestPointerLock();
+      if (!self.locked && cv.requestPointerLock) {
+        var request = cv.requestPointerLock();
+        if (request && request.catch) request.catch(function (err) {
+          self.pointerError = '鼠标锁定失败，请重新点击画面';
+          console.error(err);
+        });
+      }
     });
     document.addEventListener('pointerlockchange', function () {
       self.locked = (document.pointerLockElement === cv);
+      if (self.locked) self.pointerError = '';
+    });
+    cv.addEventListener('pointerlockerror', function () {
+      self.pointerError = '鼠标锁定失败，请重新点击画面';
+      console.error(self.pointerError);
     });
     document.addEventListener('mousemove', function (e) {
       if (!self.locked) return;
@@ -331,6 +347,7 @@
   SliceView.prototype.draw = function () {
     var gl = this.gl, cv = this.canvas;
     if (!gl) return;
+    gl.useProgram(this.prog);
     var F = this.frame();
     gl.viewport(0, 0, cv.width, cv.height);
     gl.uniform2f(this.u.uRes, cv.width, cv.height);

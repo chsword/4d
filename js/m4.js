@@ -12,7 +12,7 @@
   'use strict';
 
   var AXIS = { x: 0, y: 1, z: 2, w: 3 };
-  var PLANES = ['xy', 'xz', 'yz', 'xw', 'yw', 'zw'];
+  var PLANES = ['xy', 'xz', 'xw', 'yz', 'yw', 'zw'];
 
   function ident() {
     return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];

@@ -1,4 +1,4 @@
-/* app.js —— 三个视图的壳：切页签、接控件、跑主循环 */
+/* app.js —— 四个视图的壳：切页签、接控件、跑主循环 */
 (function () {
   'use strict';
 
@@ -6,7 +6,8 @@
   var canvases = {
     projection: document.getElementById('cv-projection'),
     slice: document.getElementById('cv-slice'),
-    analogy: document.getElementById('cv-analogy')
+    analogy: document.getElementById('cv-analogy'),
+    physics: document.getElementById('cv-physics')
   };
   var views = {};
   var current = 'analogy';
@@ -25,6 +26,12 @@
     fatal('初始化失败：' + err.message);
     console.error(err);
   }
+  try {
+    views.physics = new PhysicsView(canvases.physics);
+  } catch (err) {
+    views.physics = { error: '物理视图初始化失败：' + err.message };
+    console.error(err);
+  }
   // 切片视图要 WebGL；它挂掉不该连累另外两个纯 Canvas 2D 的视图
   try {
     views.slice = new SliceView(canvases.slice);
@@ -36,7 +43,7 @@
   /* 切片视图是逐像素 ray marching：每个像素要求几十次四维距离场，
      按 devicePixelRatio 全分辨率渲染在集显上会掉到个位数帧率。
      线框那两个视图是 Canvas 2D，反而需要高 dpr 才不毛糙。 */
-  var SCALE = { projection: dpr, analogy: dpr, slice: Math.min(dpr, 1) };
+  var SCALE = { projection: dpr, analogy: dpr, slice: Math.min(dpr, 1), physics: Math.min(dpr, 1) };
 
   function resize() {
     var r = stage.getBoundingClientRect();
@@ -52,6 +59,8 @@
 
   /* ---------- 页签 ---------- */
   function select(name) {
+    if (views.slice) views.slice.keys = {};
+    if (views.physics && views.physics.clearInput && !views.physics.error) views.physics.clearInput();
     current = name;
     for (var k in canvases) {
       canvases[k].classList.toggle('active', k === name);
@@ -64,7 +73,7 @@
     for (i = 0; i < panels.length; i++) {
       panels[i].classList.toggle('on', panels[i].dataset.view === name);
     }
-    if (name !== 'slice' && document.pointerLockElement) document.exitPointerLock();
+    if (document.pointerLockElement && document.pointerLockElement !== canvases[name]) document.exitPointerLock();
   }
   Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (t) {
     t.addEventListener('click', function () { select(t.dataset.view); });
@@ -145,6 +154,53 @@
     document.getElementById('slice-note').textContent = sv.error;
   }
 
+  /* ---------- 物理视图控件 ---------- */
+  var ph = views.physics;
+  if (ph && !ph.error) {
+    function physicsSlider(id, object, property, scale, digits) {
+      var el = document.getElementById(id), val = document.getElementById(id + '-val');
+      function update() {
+        object[property] = parseFloat(el.value) * scale;
+        val.textContent = parseFloat(el.value).toFixed(digits);
+        ph.accumulator = 0;
+      }
+      el.addEventListener('input', update);
+      update();
+    }
+    physicsSlider('physics-gravity', ph.world, 'gravity', 1, 1);
+    physicsSlider('physics-restitution', ph.world, 'restitution', 1, 2);
+    physicsSlider('physics-friction', ph.world, 'friction', 1, 2);
+    physicsSlider('physics-step', ph, 'timeStep', 0.001, 0);
+    document.getElementById('physics-capacity').textContent =
+      '最多保留 ' + ph.maxBodies + ' 个刚体，满额后替换最早的一个。';
+    window.addEventListener('keydown', function (e) {
+      if (current !== 'physics') return;
+      if (/^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(e.target.tagName) || e.target.isContentEditable) return;
+      if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'KeyZ', 'KeyX', 'KeyR', 'KeyF',
+        'KeyV', 'KeyC', 'Space', 'ShiftLeft', 'ShiftRight'].indexOf(e.code) < 0) return;
+      e.preventDefault();
+      ph.keyDown(e);
+    });
+    window.addEventListener('keyup', function (e) { ph.keyUp(e); });
+    window.addEventListener('blur', function () { ph.clearInput(); });
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) ph.clearInput();
+    });
+    // 从按钮切入后，点击画面把焦点交还给漫游操作，避免 Space 再次触发按钮。
+    canvases.physics.addEventListener('click', function () {
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    });
+    document.getElementById('physics-pause').addEventListener('change', function () { ph.paused = this.checked; });
+    document.getElementById('physics-spawn').addEventListener('click', function () { ph.spawn(); });
+    document.getElementById('physics-reset').addEventListener('click', function () { ph.resetScene(); });
+    document.getElementById('physics-camera').addEventListener('click', function () { ph.resetCamera(); });
+    document.getElementById('physics-w').addEventListener('input', function () { ph.cam[3] = parseFloat(this.value); });
+    document.getElementById('physics-wtint').addEventListener('change', function () { ph.wTint = this.checked; });
+    document.getElementById('physics-xray').addEventListener('change', function () { ph.xray = this.checked; });
+  } else if (ph && ph.error) {
+    document.getElementById('physics-note').textContent = ph.error;
+  }
+
   /* ---------- 类比视图控件 ---------- */
   var av = views.analogy;
   if (av) {
@@ -168,20 +224,22 @@
     var dt = Math.min(0.05, (now - last) / 1000);
     last = now;
     var v = views[current];
-    if (v) {
+    if (v && !v.error) {
       if (v.step) v.step(dt);
       v.draw();
     }
-    if (current === 'slice' && sv && !sv.error) {
+    if ((current === 'slice' || current === 'physics') && v && !v.error) {
       hud.style.display = 'block';
       hud.innerHTML =
-        'w = <b>' + sv.cam[3].toFixed(2) + '</b>' +
-        ' &nbsp;|&nbsp; xw = ' + (sv.a_xw * 57.2958).toFixed(0) + '°' +
-        ' &nbsp;|&nbsp; zw = ' + (sv.a_zw * 57.2958).toFixed(0) + '°' +
-        ' &nbsp;|&nbsp; xyz = (' + sv.cam[0].toFixed(1) + ', ' + sv.cam[1].toFixed(1) + ', ' + sv.cam[2].toFixed(1) + ')' +
-        (sv.locked ? '' : ' &nbsp;·&nbsp; <span class="hint">点画面锁定鼠标</span>');
-      var ws = document.getElementById('wslider');
-      if (document.activeElement !== ws) ws.value = sv.cam[3];
+        'w = <b>' + v.cam[3].toFixed(2) + '</b>' +
+        ' &nbsp;|&nbsp; xw = ' + (v.a_xw * 57.2958).toFixed(0) + '°' +
+        ' &nbsp;|&nbsp; zw = ' + (v.a_zw * 57.2958).toFixed(0) + '°' +
+        ' &nbsp;|&nbsp; xyz = (' + v.cam[0].toFixed(1) + ', ' + v.cam[1].toFixed(1) + ', ' + v.cam[2].toFixed(1) + ')' +
+        (current === 'physics' ? ' &nbsp;|&nbsp; 刚体 ' + ph.world.bodies.length + '/' + ph.maxBodies +
+          (ph.paused ? ' · 已暂停' : '') : '') +
+        (v.locked ? '' : ' &nbsp;·&nbsp; <span class="hint">' + (v.pointerError || '点画面锁定鼠标') + '</span>');
+      var ws = document.getElementById(current === 'physics' ? 'physics-w' : 'wslider');
+      if (document.activeElement !== ws) ws.value = v.cam[3];
     } else {
       hud.style.display = 'none';
     }
