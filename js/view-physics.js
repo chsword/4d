@@ -14,6 +14,7 @@
     if (this.maxBodies < 1) { this.error = 'WebGL fragment uniform 容量不足'; return; }
     var N = this.maxBodies;
     SliceView.call(this, canvas, {
+      collision: false,
       uniforms: [
         'uniform mat4 uInvR[' + N + '];',
         'uniform vec4 uBodyPos[' + N + '];',

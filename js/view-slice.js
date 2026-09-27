@@ -26,23 +26,6 @@
     'void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }'
   ].join('\n');
 
-  // 场景与切片渲染分开，物理沙盒复用同一套法线、光照、雾和相机约定。
-  var DEFAULT_MAP = [
-    'vec2 map(vec4 p){',
-    '  vec2 res = vec2(p.y + 1.5, 1.0);',
-    '  res = opU(res, vec2(sdSphere4(p - vec4(-8.0, 0.3, -10.0, 0.0), 1.45), 2.0));',
-    '  res = opU(res, vec2(sdBox4(p - vec4(-4.0, 0.3, -10.0, 0.0), vec4(1.1)), 3.0));',
-    '  res = opU(res, vec2(sdDuocylinder(p - vec4(0.0, 0.3, -10.0, 0.0), 1.15, 1.15), 4.0));',
-    '  res = opU(res, vec2(sdSpheritorus(p - vec4(4.0, 0.3, -10.0, 0.0), 1.15, 0.45), 5.0));',
-    '  res = opU(res, vec2(sdTiger(p - vec4(8.0, 0.3, -10.0, 0.0), 1.0, 1.0, 0.34), 6.0));',
-    '  res = opU(res, vec2(sdBox4(p - vec4(0.0, 0.5, -17.0, 0.0), vec4(9.0, 2.0, 0.3, 1.6)), 7.0));',
-    '  res = opU(res, vec2(sdBox4(p - vec4(0.0, -0.7, -21.0, 3.0), vec4(0.85)), 8.0));',
-    '  res = opU(res, vec2(sdPillar(p - vec4(-12.0, 1.0, -6.0, 0.0), 0.25, 2.5), 9.0));',
-    '  res = opU(res, vec2(sdPillar(p - vec4( 12.0, 1.0, -6.0, 0.0), 0.25, 2.5), 9.0));',
-    '  return res;',
-    '}'
-  ].join('\n');
-
   /* GLSL 源码必须是纯 ASCII —— GLSL ES 规定的字符集不含中文，
      ANGLE 等实现会连注释里的非 ASCII 字符一起报错。所以着色器里的说明
      都搬到这里：
@@ -73,28 +56,12 @@
     'uniform float uFocal;',
     'uniform float uWTint;',
     'uniform float uXRay;',
+    'uniform float uSelected;',
     '/* SCENE_UNIFORMS */',
     '',
     'const float FAR = 70.0;',
     '',
-    'float sdBox4(vec4 p, vec4 b){',
-    '  vec4 d = abs(p) - b;',
-    '  return length(max(d, 0.0)) + min(max(max(d.x, d.y), max(d.z, d.w)), 0.0);',
-    '}',
-    'float sdSphere4(vec4 p, float r){ return length(p) - r; }',
-    'float sdDuocylinder(vec4 p, float r1, float r2){',
-    '  vec2 d = vec2(length(p.xy) - r1, length(p.zw) - r2);',
-    '  return min(max(d.x, d.y), 0.0) + length(max(d, 0.0));',
-    '}',
-    'float sdSpheritorus(vec4 p, float R, float r){',
-    '  return length(vec2(length(p.xyz) - R, p.w)) - r;',
-    '}',
-    'float sdTiger(vec4 p, float R1, float R2, float r){',
-    '  return length(vec2(length(p.xy) - R1, length(p.zw) - R2)) - r;',
-    '}',
-    'float sdPillar(vec4 p, float r, float h){',
-    '  return max(length(p.xz) - r, abs(p.y) - h);',
-    '}',
+    Scene4.library,
     '',
     '// no vector ternary: some old GLSL drivers reject "c ? vecA : vecB"',
     'vec2 opU(vec2 a, vec2 b){ if (a.x < b.x) return a; return b; }',
@@ -188,6 +155,7 @@
     '',
     '    col  = base * (amb * vec3(0.30, 0.36, 0.48) + dif * sh * vec3(1.35, 1.24, 1.05));',
     '    col += fres * 0.25 * vec3(0.6, 0.8, 1.0);',
+    '    if (abs(id - uSelected) < 0.1) col += (0.04 + fres * 0.3) * vec3(0.2, 0.9, 1.0);',
     '',
     '    if (uWTint > 0.5 && id > 1.5) {',
     '      vec4 inside = p4 - 0.03 * (n.x * uAx + n.y * uAy + n.z * uAz);',
@@ -216,7 +184,11 @@
   }
 
   function SliceView(canvas, scene) {
-    scene = scene || {};
+    scene = scene || Scene4.gallery;
+    this.scene = scene;
+    this.cameraRadius = 0.35;
+    this.collisionScene = scene.collision === true ? scene : null;
+    if (this.collisionScene && typeof scene.move !== 'function') throw new TypeError('Collision scene needs move()');
     this.canvas = canvas;
     this.gl = canvas.getContext('webgl', { antialias: false, alpha: false })
            || canvas.getContext('experimental-webgl');
@@ -226,7 +198,7 @@
     var prog = gl.createProgram();
     gl.attachShader(prog, compile(gl, gl.VERTEX_SHADER, VERT));
     var frag = FRAG.replace('/* SCENE_UNIFORMS */', scene.uniforms || '')
-      .replace('/* SCENE_MAP */', scene.map || DEFAULT_MAP);
+      .replace('/* SCENE_MAP */', scene.map || Scene4.gallery.map);
     gl.attachShader(prog, compile(gl, gl.FRAGMENT_SHADER, frag));
     gl.linkProgram(prog);
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
@@ -243,7 +215,7 @@
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
 
     this.u = {};
-    ['uRes', 'uCam', 'uAx', 'uAy', 'uAz', 'uAw', 'uFocal', 'uWTint', 'uXRay']
+    ['uRes', 'uCam', 'uAx', 'uAy', 'uAz', 'uAw', 'uFocal', 'uWTint', 'uXRay', 'uSelected']
       .forEach(function (n) { this.u[n] = gl.getUniformLocation(prog, n); }, this);
 
     // 玩家状态
@@ -255,6 +227,7 @@
     this.focal = 1.5;
     this.wTint = true;
     this.xray = false;
+    this.selectedMaterial = 0;
     this.keys = {};
     this.locked = false;
     this._bind();
@@ -263,6 +236,7 @@
   SliceView.prototype._bind = function () {
     var self = this, cv = this.canvas;
     cv.addEventListener('click', function () {
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
       if (!self.locked && cv.requestPointerLock) {
         var request = cv.requestPointerLock();
         if (request && request.catch) request.catch(function (err) {
@@ -307,9 +281,9 @@
 
   SliceView.prototype.step = function (dt) {
     var k = this.keys, F = this.frame();
-    var right = M4.col(F, 0), up = M4.col(F, 1), fwd = M4.col(F, 2);
+    var right = M4.col(F, 0), fwd = M4.col(F, 2);
     var speed = (k['shiftleft'] || k['shiftright'] ? 14 : 5.5) * dt;
-    var move = [0, 0, 0, 0], i;
+    var move = [0, 0, 0, 0];
 
     // 水平移动：把前 / 右向量的 y 分量去掉，走起来像个人而不是飞行器
     var fh = [fwd[0], 0, fwd[2], fwd[3]], rh = [right[0], 0, right[2], right[3]];
@@ -328,9 +302,9 @@
 
     if (M4.len(move) > 1e-6) {
       move = M4.scale(M4.normalize(move), speed);
-      for (i = 0; i < 4; i++) this.cam[i] += move[i];
+      this.moveCamera(move);
     }
-    if (this.cam[1] < -1.1) this.cam[1] = -1.1;
+    if (!this.collisionScene && this.cam[1] < -1.1) this.cam[1] = -1.1;
 
     // Z / X、R / F：真正的四维转身 —— 把看不见的方向旋进视野
     var rs = 0.9 * dt;
@@ -340,8 +314,17 @@
     if (k['keyf']) this.a_xw += rs;
   };
 
+  SliceView.prototype.moveCamera = function (delta) {
+    this.cam = this.collisionScene
+      ? this.collisionScene.move(this.cam, delta, this.cameraRadius) : M4.add(this.cam, delta);
+  };
+
+  SliceView.prototype.setW = function (w) {
+    this.moveCamera([0, 0, 0, w - this.cam[3]]);
+  };
+
   SliceView.prototype.resetW = function () {
-    this.cam[3] = 0; this.a_xw = 0; this.a_zw = 0;
+    this.setW(0); this.a_xw = 0; this.a_zw = 0;
   };
 
   SliceView.prototype.draw = function () {
@@ -359,6 +342,7 @@
     gl.uniform1f(this.u.uFocal, this.focal);
     gl.uniform1f(this.u.uWTint, this.wTint ? 1 : 0);
     gl.uniform1f(this.u.uXRay, this.xray ? 1 : 0);
+    gl.uniform1f(this.u.uSelected, this.selectedMaterial);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   };
 

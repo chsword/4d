@@ -1,4 +1,4 @@
-/* app.js —— 四个视图的壳：切页签、接控件、跑主循环 */
+/* app.js —— 视图的壳：切页签、接控件、跑主循环 */
 (function () {
   'use strict';
 
@@ -7,7 +7,9 @@
     projection: document.getElementById('cv-projection'),
     slice: document.getElementById('cv-slice'),
     analogy: document.getElementById('cv-analogy'),
-    physics: document.getElementById('cv-physics')
+    physics: document.getElementById('cv-physics'),
+    linked: document.getElementById('cv-linked'),
+    linkedSlice: document.getElementById('cv-linked-slice')
   };
   var views = {};
   var current = 'analogy';
@@ -39,20 +41,32 @@
     views.slice = { error: 'shader 编译失败：' + err.message, draw: function () {} };
     console.error(err);
   }
+  try {
+    views.linked = new LinkedView(canvases.linked, canvases.linkedSlice);
+  } catch (err) {
+    views.linked = { error: '联动视图初始化失败：' + err.message };
+    console.error(err);
+  }
 
   /* 切片视图是逐像素 ray marching：每个像素要求几十次四维距离场，
      按 devicePixelRatio 全分辨率渲染在集显上会掉到个位数帧率。
      线框那两个视图是 Canvas 2D，反而需要高 dpr 才不毛糙。 */
-  var SCALE = { projection: dpr, analogy: dpr, slice: Math.min(dpr, 1), physics: Math.min(dpr, 1) };
+  var SCALE = { projection: dpr, analogy: dpr, slice: Math.min(dpr, 1), physics: Math.min(dpr, 1),
+    linked: dpr, linkedSlice: Math.min(dpr, 1) };
 
   function resize() {
     var r = stage.getBoundingClientRect();
     for (var k in canvases) {
       var cv = canvases[k], sc = SCALE[k];
-      cv.width = Math.max(320, Math.floor(r.width * sc));
-      cv.height = Math.max(240, Math.floor(r.height * sc));
-      cv.style.width = r.width + 'px';
-      cv.style.height = r.height + 'px';
+      var linked = k === 'linked' || k === 'linkedSlice', stacked = window.innerWidth <= 640;
+      var width = linked && !stacked ? r.width / 2 : r.width;
+      var height = linked && stacked ? r.height / 2 : r.height;
+      cv.width = Math.max(1, Math.floor(width * sc));
+      cv.height = Math.max(1, Math.floor(height * sc));
+      cv.style.width = width + 'px';
+      cv.style.height = height + 'px';
+      cv.style.left = k === 'linkedSlice' && !stacked ? width + 'px' : '0';
+      cv.style.top = k === 'linkedSlice' && stacked ? height + 'px' : '0';
     }
   }
   window.addEventListener('resize', resize);
@@ -60,10 +74,11 @@
   /* ---------- 页签 ---------- */
   function select(name) {
     if (views.slice) views.slice.keys = {};
+    if (views.linked && views.linked.slice) views.linked.slice.keys = {};
     if (views.physics && views.physics.clearInput && !views.physics.error) views.physics.clearInput();
     current = name;
     for (var k in canvases) {
-      canvases[k].classList.toggle('active', k === name);
+      canvases[k].classList.toggle('active', k === name || (name === 'linked' && k === 'linkedSlice'));
     }
     var tabs = document.querySelectorAll('.tab');
     for (var i = 0; i < tabs.length; i++) {
@@ -73,7 +88,10 @@
     for (i = 0; i < panels.length; i++) {
       panels[i].classList.toggle('on', panels[i].dataset.view === name);
     }
-    if (document.pointerLockElement && document.pointerLockElement !== canvases[name]) document.exitPointerLock();
+    var inputCanvas = name === 'linked' ? canvases.linkedSlice : canvases[name];
+    if (document.pointerLockElement && document.pointerLockElement !== inputCanvas) document.exitPointerLock();
+    stage.classList.toggle('linked', name === 'linked');
+    resize();
   }
   Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (t) {
     t.addEventListener('click', function () { select(t.dataset.view); });
@@ -127,17 +145,31 @@
 
   /* ---------- 切片视图控件 ---------- */
   var sv = views.slice;
+  var lv = views.linked;
+  function activeSlice() {
+    if (current === 'slice' && sv && !sv.error) return sv;
+    if (current === 'linked' && lv && !lv.error) return lv.slice;
+    return null;
+  }
+  window.addEventListener('keydown', function (e) {
+    var v = activeSlice();
+    if (!v || /^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(e.target.tagName) || e.target.isContentEditable) return;
+    if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'KeyZ', 'KeyX', 'KeyR', 'KeyF',
+      'KeyC', 'Space', 'ShiftLeft', 'ShiftRight'].indexOf(e.code) < 0) return;
+    e.preventDefault();
+    v.keys[e.code.toLowerCase()] = true;
+  });
+  function clearSliceInput() {
+    if (sv) sv.keys = {};
+    if (lv && lv.slice) lv.slice.keys = {};
+  }
+  window.addEventListener('keyup', function (e) {
+    if (sv && sv.keys) sv.keys[e.code.toLowerCase()] = false;
+    if (lv && lv.slice) lv.slice.keys[e.code.toLowerCase()] = false;
+  });
+  window.addEventListener('blur', clearSliceInput);
+  document.addEventListener('visibilitychange', function () { if (document.hidden) clearSliceInput(); });
   if (sv && !sv.error) {
-    window.addEventListener('keydown', function (e) {
-      if (current !== 'slice') return;
-      sv.keys[e.code.toLowerCase()] = true;
-      if (['keyw', 'keya', 'keys', 'keyd', 'space'].indexOf(e.code.toLowerCase()) >= 0) {
-        e.preventDefault();
-      }
-    });
-    window.addEventListener('keyup', function (e) { sv.keys[e.code.toLowerCase()] = false; });
-    window.addEventListener('blur', function () { sv.keys = {}; });
-
     document.getElementById('wtint').addEventListener('change', function () {
       sv.wTint = this.checked;
     });
@@ -148,10 +180,33 @@
       sv.cam = [0, 0.4, 0, 0]; sv.yaw = 0; sv.pitch = 0; sv.resetW();
     });
     document.getElementById('wslider').addEventListener('input', function () {
-      sv.cam[3] = parseFloat(this.value);
+      sv.setW(parseFloat(this.value));
+      this.value = sv.cam[3];
     });
   } else if (sv && sv.error) {
     document.getElementById('slice-note').textContent = sv.error;
+  }
+
+  /* ---------- 联动：共用相机状态，不同步两套角度 ---------- */
+  if (lv && !lv.error) {
+    document.getElementById('linked-w').addEventListener('input', function () {
+      lv.slice.setW(parseFloat(this.value)); this.value = lv.slice.cam[3];
+    });
+    document.getElementById('linked-object').addEventListener('change', function () { lv.selected = this.value; });
+    document.getElementById('linked-reset').addEventListener('click', function () {
+      lv.reset();
+      document.getElementById('linked-answer').textContent = '已回到墙前；先预测下一层，再揭示。';
+    });
+    function predict(exists) {
+      var w = parseFloat(document.getElementById('linked-next-w').value), result = lv.predict(w, exists);
+      document.getElementById('linked-answer').textContent = result.reached
+        ? (result.correct ? '预测正确：' : '预测不符：') + lv.selected + ' 在 w=' + w + (result.exists ? ' 有截面。' : ' 无截面。')
+        : '移动被碰撞阻挡，未到目标 w；请先退离物体再预测。当前截面不是目标层的结果。';
+    }
+    document.getElementById('linked-yes').addEventListener('click', function () { predict(true); });
+    document.getElementById('linked-no').addEventListener('click', function () { predict(false); });
+  } else if (lv && lv.error) {
+    document.getElementById('linked-note').textContent = lv.error;
   }
 
   /* ---------- 物理视图控件 ---------- */
@@ -225,8 +280,14 @@
     last = now;
     var v = views[current];
     if (v && !v.error) {
-      if (v.step) v.step(dt);
-      v.draw();
+      try {
+        if (v.step) v.step(dt);
+        v.draw();
+      } catch (err) {
+        v.error = err.message;
+        fatal('视图运行失败：' + err.message);
+        console.error(err);
+      }
     }
     if ((current === 'slice' || current === 'physics') && v && !v.error) {
       hud.style.display = 'block';

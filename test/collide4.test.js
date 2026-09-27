@@ -497,11 +497,13 @@ test('four-box stack settles for 8 seconds with coupled floor contacts, no sinki
 });
 
 test('six-body demo, classic script order and rendering uniforms/SDF are wired without shader regressions', function () {
+  require('../js/scene4.js');
   require('../js/view-slice.js');
   require('../js/view-physics.js');
   var html = require('fs').readFileSync(require('path').join(__dirname, '../index.html'), 'utf8');
   assert(html.indexOf('src="js/physics4.js"') < html.indexOf('src="js/collide4.js"') &&
     html.indexOf('src="js/collide4.js"') < html.indexOf('src="js/view-physics.js"'), 'classic script order');
+  assert(html.indexOf('src="js/scene4.js"') < html.indexOf('src="js/view-slice.js"'), 'shared SDF library before renderer');
   var sources = [], uploaded = {}, draws = 0, oldDocument = global.document;
   global.document = { addEventListener: function () {} };
   var gl = {
