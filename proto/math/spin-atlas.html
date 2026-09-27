@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SO(4) 双轨迹球与 S³ 双图册</title>
+<style>
+  :root { color-scheme: dark; font: 16px/1.6 system-ui, sans-serif; background: #101622; color: #e4ebf8; }
+  body { max-width: 1050px; margin: auto; padding: 24px; }
+  h1 { font-size: 1.6rem; margin-bottom: 8px; }
+  h2 { font-size: 1.1rem; }
+  p { color: #bbc9dc; }
+  code, pre { font-family: ui-monospace, monospace; }
+  .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .card { background: #172131; border: 1px solid #35455d; border-radius: 10px; padding: 16px; }
+  .card h2 { margin: 0; }
+  .ball { display: block; width: 280px; max-width: 100%; margin: auto; touch-action: none; cursor: grab; }
+  canvas:focus-visible, button:focus-visible { outline: 3px solid #a6d8ff; outline-offset: 3px; }
+  #atlas { width: 100%; height: auto; display: block; background: #131d2c; border-radius: 10px; }
+  button { padding: 9px 14px; margin: 5px 6px 5px 0; background: #233850; color: #edf5ff; border: 1px solid #617c9c; border-radius: 6px; cursor: pointer; }
+  button:hover { background: #344e6a; }
+  pre { font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; color: #c7ddfa; }
+  .warning { border-left: 3px solid #f2bf6c; padding-left: 14px; color: #f2d8ad; }
+  #notice { min-height: 1.6em; color: #b7dfc6; }
+  a { color: #a6d8ff; }
+  @media (max-width: 560px) { body { padding: 12px; } .controls { gap: 8px; } .card { padding: 8px; } }
+</style>
+</head>
+<body>
+<h1>SO(4)：两套三维操作，保留提升符号</h1>
+<p><code>q' = l q conjugate(r)</code>，坐标约定 <code>q = x + y i + z j + w k</code>。
+拖动两个轨迹球，左、右增量互相交换；每侧箭头表示三维共轭作用，数值保留四元数提升。
+聚焦轨迹球后也可用方向键旋转 i/j 轴，用 Q/E 旋转 k 轴。</p>
+<div class="controls">
+  <section class="card">
+    <h2>左因子 l</h2>
+    <canvas class="ball" id="leftBall" width="280" height="240" tabindex="0" aria-label="左四元数轨迹球，支持拖动和键盘"></canvas>
+    <pre id="leftReadout"></pre>
+  </section>
+  <section class="card">
+    <h2>右因子 r</h2>
+    <canvas class="ball" id="rightBall" width="280" height="240" tabindex="0" aria-label="右四元数轨迹球，支持拖动和键盘"></canvas>
+    <pre id="rightReadout"></pre>
+  </section>
+</div>
+<p>
+  <button id="leftLoop" type="button">左侧 2π 环路的终点</button>
+  <button id="bothLoops" type="button">两侧同时反号</button>
+  <button id="reset" type="button">重置</button>
+  <button id="export" type="button">导出完整四维样本与生成规则</button>
+</p>
+<div id="notice" role="status" aria-live="polite"></div>
+<h2>S³ → 两张有界三维图 → 二维画布</h2>
+<p>四种颜色是四根初始圆纤维。标记 F1–F4 指定每根圆的相位零点，点反号时标记移动到对跖点；
+整根圆作为集合可能不变，不能只盯着圆的轮廓。一般右旋转会改变初始纤维轴。</p>
+<canvas id="atlas" width="960" height="420" aria-label="S³ 的两张有界立体图，曲线颜色标识纤维，亮度仅辅助深度"></canvas>
+<pre id="diagnostics"></pre>
+<p class="warning"><strong>完备的是记录，不是这一张画布。</strong>
+每张图的三维坐标可反解 S³ 点；画布又作了一次三到二正交投影，仍有深度重叠。
+这里只演示单位 S³ 上的有限曲线样本，不是四维实体。赤道换图处不跨面板连线；有限采样会留小间隙。
+全部样本半径为 1，一般 R⁴ 还必须保存半径。</p>
+<p>数学推导与误差口径见 <a href="../../docs/math/representations.md">representations.md</a>。本页零依赖，无网络请求，无着色器。</p>
+<script>
+'use strict';
+(function () {
+  var one = [1, 0, 0, 0], state = { left: one.slice(), right: one.slice() };
+  var colors = ['#ffbf69', '#78dce8', '#c7a5ff', '#93dfaa'];
+  var bases = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [-1, 0, 0]];
+  var sampleCount = 128;
+  function dot(a, b) { return a.reduce(function (s, x, i) { return s + x * b[i]; }, 0); }
+  function norm(a) { return Math.sqrt(dot(a, a)); }
+  function scale(a, s) { return a.map(function (x) { return x * s; }); }
+  function normalize(a) {
+    var n = norm(a);
+    if (!(n > 0) || !Number.isFinite(n)) throw new Error('Nonfinite or zero quaternion/vector');
+    return scale(a, 1 / n);
+  }
+  function cross(a, b) {
+    return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  }
+  function mul(a, b) {
+    return [
+      a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3],
+      a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2],
+      a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1],
+      a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0]
+    ];
+  }
+  function conjugate(q) { return [q[0], -q[1], -q[2], -q[3]]; }
+  function rotate(q) { return mul(mul(state.left, q), conjugate(state.right)); }
+  function section(n) {
+    if (n[0] >= 0) return scale([1 + n[0], 0, -n[2], n[1]], 1 / Math.sqrt(2 * (1 + n[0])));
+    return scale([-n[2], n[1], 1 - n[0], 0], 1 / Math.sqrt(2 * (1 - n[0])));
+  }
+  var seeds = bases.map(section);
+  function chart(q, pole) {
+    var d = 1 - pole * q[3];
+    if (!(d > 0)) throw new Error('Excluded stereographic pole');
+    return scale(q.slice(0, 3), 1 / d);
+  }
+  function unchart(u, pole) {
+    var s = dot(u, u);
+    return scale(u, 2 / (1 + s)).concat(pole * (s - 1) / (1 + s));
+  }
+  function samples() {
+    var out = [];
+    seeds.forEach(function (seed, fiber) {
+      for (var j = 0; j < sampleCount; j++) {
+        var theta = 2 * Math.PI * j / sampleCount;
+        out.push({ id: 'F' + (fiber + 1) + ':' + j, fiber: fiber, index: j, theta: theta,
+          point: rotate(mul(seed, [Math.cos(theta), Math.sin(theta), 0, 0])) });
+      }
+    });
+    return out;
+  }
+  function exportData() {
+    return { format: 'math4-spin-atlas-v1', convention: '[x,y,z,w] = x+y*i+z*j+w*k',
+      left: state.left.slice(), right: state.right.slice(), seedQuaternions: seeds.map(function (q) { return q.slice(); }),
+      curveRule: 'q(theta) = left * (seed * (cos(theta) + i*sin(theta))) * conjugate(right); 0 <= theta < 2*pi',
+      sampleCountPerFiber: sampleCount, radius: 1, samples: samples() };
+  }
+  function spatial(u) {
+    var cy = Math.cos(0.6), sy = Math.sin(0.6), cp = Math.cos(-0.3), sp = Math.sin(-0.3);
+    var x = cy * u[0] + sy * u[2], z = -sy * u[0] + cy * u[2];
+    return [x, cp * u[1] - sp * z, sp * u[1] + cp * z];
+  }
+  function unspatial(u) {
+    var cy = Math.cos(0.6), sy = Math.sin(0.6), cp = Math.cos(-0.3), sp = Math.sin(-0.3);
+    var z = -sp * u[1] + cp * u[2];
+    return [cy * u[0] - sy * z, cp * u[1] + sp * u[2], sy * u[0] + cy * z];
+  }
+  function segment(ctx, a, b) {
+    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+  }
+  function drawBall(id, q) {
+    var canvas = document.getElementById(id), ctx = canvas.getContext('2d'), cx = 140, cy = 120, radius = 90;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = '#526780'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(cx, cy, radius, 0, 2 * Math.PI); ctx.stroke();
+    var axes = [[0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]];
+    axes.forEach(function (axis, i) {
+      var v = spatial(mul(mul(q, axis), conjugate(q)).slice(1));
+      var end = [cx + radius * v[0], cy - radius * v[1]];
+      ctx.strokeStyle = colors[i]; ctx.fillStyle = colors[i]; ctx.lineWidth = 3;
+      segment(ctx, [cx, cy], end);
+      ctx.beginPath(); ctx.arc(end[0], end[1], 4, 0, 2 * Math.PI); ctx.fill();
+      ctx.font = '15px monospace'; ctx.fillText(['i', 'j', 'k'][i], end[0] + 7, end[1] - 4);
+    });
+  }
+  function drawAtlas(points) {
+    var canvas = document.getElementById('atlas'), ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    [1, -1].forEach(function (pole, panel) {
+      var cx = 240 + 480 * panel, cy = 215, radius = 155;
+      ctx.globalAlpha = 1; ctx.strokeStyle = '#425975'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(cx, cy, radius, 0, 2 * Math.PI); ctx.stroke();
+      ctx.fillStyle = '#cad9ed'; ctx.font = '16px monospace';
+      ctx.fillText(panel === 0 ? 'w <= 0: u = (x,y,z)/(1-w)' : 'w >= 0: u = (x,y,z)/(1+w)', cx - 178, 32);
+      function visible(p) { return pole * p.point[3] <= 0; }
+      function projected(p) {
+        var u = spatial(chart(p.point, pole));
+        return [cx + radius * u[0], cy - radius * u[1], u[2]];
+      }
+      points.forEach(function (p) {
+        var next = points[p.fiber * sampleCount + (p.index + 1) % sampleCount];
+        if (!visible(p) || !visible(next)) return;
+        var a = projected(p), b = projected(next);
+        ctx.strokeStyle = colors[p.fiber]; ctx.lineWidth = 1.5;
+        ctx.globalAlpha = 0.45 + 0.25 * (a[2] + b[2]) / 2;
+        segment(ctx, a, b);
+      });
+      points.forEach(function (p) {
+        if (p.index !== 0 || !visible(p)) return;
+        var a = projected(p);
+        ctx.globalAlpha = 1; ctx.fillStyle = colors[p.fiber];
+        ctx.beginPath(); ctx.arc(a[0], a[1], 5, 0, 2 * Math.PI); ctx.fill();
+        ctx.font = 'bold 15px monospace'; ctx.fillText('F' + (p.fiber + 1), a[0] + 8, a[1] - 6);
+      });
+      ctx.globalAlpha = 1; ctx.fillStyle = '#8ea6c3'; ctx.font = '13px monospace';
+      ctx.fillText('Unit 3-ball, then orthographic 3D -> 2D', cx - 164, 399);
+    });
+  }
+  function tuple(q) { return '[' + q.map(function (x) { return x.toFixed(6); }).join(', ') + ']'; }
+  function draw() {
+    drawBall('leftBall', state.left); drawBall('rightBall', state.right);
+    document.getElementById('leftReadout').textContent = 'l = ' + tuple(state.left);
+    document.getElementById('rightReadout').textContent = 'r = ' + tuple(state.right);
+    var points = samples(), maxNorm = 0, maxInverse = 0;
+    points.forEach(function (p) {
+      maxNorm = Math.max(maxNorm, Math.abs(norm(p.point) - 1));
+      var pole = p.point[3] <= 0 ? 1 : -1, decoded = unchart(chart(p.point, pole), pole);
+      decoded.forEach(function (x, i) { maxInverse = Math.max(maxInverse, Math.abs(x - p.point[i])); });
+    });
+    drawAtlas(points);
+    document.getElementById('diagnostics').textContent = 'Samples: ' + points.length +
+      ' | max |norm(q)-1| = ' + maxNorm.toExponential(2) +
+      ' | max atlas inverse error = ' + maxInverse.toExponential(2) +
+      '\nF1 phase-zero point: ' + tuple(points[0].point) +
+      '\nThe two screen coordinates are NOT the complete three-dimensional chart.';
+  }
+  function deltaBetween(a, b) {
+    var real = dot(a, b), axis = cross(a, b);
+    // Remove cancellation-induced axial error before normalizing near antipodes.
+    var parallel = dot(axis, a) / dot(a, a);
+    axis = axis.map(function (x, i) { return x - parallel * a[i]; });
+    var length = norm(axis);
+    if (length > 0) {
+      var half = Math.atan2(length, real) / 2;
+      return [Math.cos(half)].concat(scale(axis, Math.sin(half) / length));
+    }
+    if (real >= 0) return one.slice();
+    axis = cross(a, [1, 0, 0]);
+    if (norm(axis) < 1e-6) axis = cross(a, [0, 1, 0]);
+    return [0].concat(normalize(axis));
+  }
+  function increment(side, delta) {
+    state[side] = normalize(mul(delta, state[side]));
+    draw();
+  }
+  function bindBall(id, side) {
+    var canvas = document.getElementById(id), previous = null, pointer = null;
+    function onSphere(event) {
+      var rect = canvas.getBoundingClientRect();
+      var x = ((event.clientX - rect.left) * canvas.width / rect.width - 140) / 90;
+      var y = (120 - (event.clientY - rect.top) * canvas.height / rect.height) / 90;
+      var s = x * x + y * y;
+      if (s >= 1) return unspatial(normalize([x, y, 0]));
+      return unspatial([x, y, Math.sqrt(1 - s)]);
+    }
+    canvas.addEventListener('pointerdown', function (event) {
+      if (pointer !== null) return;
+      pointer = event.pointerId; previous = onSphere(event);
+      canvas.setPointerCapture(pointer); canvas.focus(); event.preventDefault();
+    });
+    canvas.addEventListener('pointermove', function (event) {
+      if (event.pointerId !== pointer || previous === null) return;
+      var next = onSphere(event);
+      increment(side, deltaBetween(previous, next)); previous = next;
+    });
+    function release(event) {
+      if (event.pointerId !== pointer) return;
+      previous = null; pointer = null;
+    }
+    canvas.addEventListener('pointerup', release);
+    canvas.addEventListener('pointercancel', release);
+    canvas.addEventListener('lostpointercapture', release);
+    canvas.addEventListener('keydown', function (event) {
+      var axes = { ArrowUp: [1, 0, 0], ArrowDown: [-1, 0, 0], ArrowLeft: [0, 1, 0],
+        ArrowRight: [0, -1, 0], q: [0, 0, 1], Q: [0, 0, 1], e: [0, 0, -1], E: [0, 0, -1] };
+      var axis = axes[event.key];
+      if (!axis) return;
+      event.preventDefault();
+      increment(side, [Math.cos(0.06)].concat(scale(axis, Math.sin(0.06))));
+    });
+  }
+  function notice(text) { document.getElementById('notice').textContent = text; }
+  document.getElementById('leftLoop').addEventListener('click', function () {
+    state.left = scale(state.left, -1); draw();
+    notice('Left lift changed sign: every labelled 4D point is now its antipode; the SO(3) arrows are unchanged.');
+  });
+  document.getElementById('bothLoops').addEventListener('click', function () {
+    state.left = scale(state.left, -1); state.right = scale(state.right, -1); draw();
+    notice('Both lifts changed sign: every labelled 4D point is unchanged.');
+  });
+  document.getElementById('reset').addEventListener('click', function () {
+    state.left = one.slice(); state.right = one.slice(); draw(); notice('Identity restored.');
+  });
+  document.getElementById('export').addEventListener('click', function () {
+    var blob = new Blob([JSON.stringify(exportData(), null, 2)], { type: 'application/json' });
+    var url = URL.createObjectURL(blob), anchor = document.createElement('a');
+    anchor.href = url; anchor.download = 'math4-spin-atlas.json';
+    document.body.appendChild(anchor); anchor.click(); anchor.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 0);
+    notice('Exported labelled 4D samples, quaternion lifts, and continuous curve generation rule.');
+  });
+  bindBall('leftBall', 'left'); bindBall('rightBall', 'right');
+  window.Math4Demo = { state: state, mul: mul, rotate: rotate, chart: chart, unchart: unchart,
+    deltaBetween: deltaBetween, increment: increment, samples: samples, exportData: exportData };
+  draw();
+  notice('Drag either sphere. A 2pi loop has an observable lift sign even when the SO(3) arrows return.');
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>手性实验：不是把手掌翻到背面</title>
+<style>
+  :root { color-scheme: dark; font: 15px/1.65 system-ui, sans-serif; color: #dbe4f2; background: #0a0c14; }
+  * { box-sizing: border-box; }
+  body { max-width: 1180px; margin: auto; padding: 24px; }
+  h1 { font-size: 26px; line-height: 1.3; margin: 0 0 12px; }
+  p { margin: 8px 0 16px; }
+  .muted { color: #9baac0; }
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 14px 0; }
+  button, select { font: inherit; color: inherit; background: #1a2132; border: 1px solid #43516b; border-radius: 6px; padding: 8px 12px; min-height: 44px; }
+  button { cursor: pointer; }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid #ffd24a; outline-offset: 3px; }
+  input[type="range"] { flex: 1; min-width: 150px; accent-color: #ffd24a; }
+  output, code { font-family: ui-monospace, monospace; }
+  .views { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  figure { margin: 0; min-width: 0; background: #10141f; border: 1px solid #29334a; }
+  figcaption { padding: 12px 16px; border-bottom: 1px solid #29334a; }
+  canvas { display: block; width: 100%; height: 350px; }
+  #trace { height: 220px; }
+  .evidence { display: grid; grid-template-columns: 300px 1fr; gap: 22px; margin-top: 18px; align-items: center; }
+  #status { min-height: 3.3em; color: #ffd24a; }
+  #fatal { background: #571f2b; padding: 12px; }
+  details { border-top: 1px solid #29334a; padding-top: 16px; margin-top: 18px; }
+  a { color: #8dd5ff; }
+  @media (max-width: 660px) {
+    body { padding: 16px; }
+    .views, .evidence { grid-template-columns: 1fr; }
+    canvas { height: 280px; }
+    h1 { font-size: 23px; }
+  }
+</style>
+</head>
+<body>
+<h1>左手变右手，还是只看到了手背？</h1>
+<p class="muted">先猜，再拖到 180°。这是带厚度、掌背标记的刚性积木手，不是平面手形图片。两幅图使用完全相同的三维观察相机。</p>
+<p id="fatal" role="alert" hidden></p>
+<div class="controls">
+  <label for="mode">物体的运动</label>
+  <select id="mode">
+    <option value="xw">四维：xw 旋转</option>
+    <option value="xz">三维对照：xz 旋转</option>
+    <option value="xy">三维对照：xy 旋转</option>
+    <option value="yz">三维对照：yz 旋转</option>
+  </select>
+  <button id="play" type="button">播放一次</button>
+  <button id="reset" type="button">回到起点</button>
+</div>
+<div class="controls">
+  <label for="angle">转角</label>
+  <input id="angle" type="range" min="0" max="180" step="0.5" value="0">
+  <output id="angle-value" for="angle">0°</output>
+  <button id="middle" type="button">停在 90°</button>
+  <button id="end" type="button">到 180°</button>
+  <label for="camera">两图的观察方向</label>
+  <select id="camera">
+    <option value="oblique">斜看（看得出厚度）</option>
+    <option value="front">正看掌心</option>
+    <option value="back">从背后看</option>
+  </select>
+</div>
+<div class="views">
+  <figure><figcaption>同一只左手 · 正在运动</figcaption><canvas id="moving" aria-label="运动中的有厚度的左手模型"></canvas></figure>
+  <figure><figcaption>固定目标 · 原模型的 x 镜像</figcaption><canvas id="target" aria-label="镜像右手目标，与左图共用相机"></canvas></figure>
+</div>
+<div class="evidence">
+  <figure><figcaption>两个材料点 P、Q 的 xw 记录</figcaption><canvas id="trace" aria-label="材料点的 xw 坐标轨迹，非第四维颜色编码"></canvas></figure>
+  <div>
+    <p id="status" role="status" aria-live="polite"></p>
+    <p><strong>不是挤扁：</strong><span id="distance"></span></p>
+    <p><strong>不是换贴图：</strong>掌心一颗红标记、手背两颗蓝标记始终属于原来的材料点。只翻到手背不能匹配目标。</p>
+    <p><strong>定向体积：</strong><span id="volume"></span></p>
+    <p class="muted">手的画面是 xyz 正交投影，再交给三维相机；不是 w=0 截面。90° 的薄片只是投影退化，下方记录仍保留 w 距离。</p>
+  </div>
+</div>
+<details>
+  <summary>为什么三维不行，四维却行？</summary>
+  <p>低维版本：纸上的 F 与镜像 F 不能只在纸面内旋转重合，离开纸面翻转却能做到。这里不是重播平面国切片，而是检验“保持刚性时，镜像能不能重合”。</p>
+  <p>嵌入 w=0，令 <code>R(x,y,z,w)=(x cos θ-w sin θ, y, z, x sin θ+w cos θ)</code>。
+    从 θ=0 连续到 π，终点为 <code>(-x,y,z,0)</code>。四维矩阵的行列式始终是 +1。</p>
+  <p>模型附有四个固定、不共面的材料点。三维定向体积在任何 SO(3) 旋转下保持符号，镜像却翻转符号；所以不只是下拉框中的三个例子失败，而是任何三维刚体旋转都不行。四维中间态离开原来的三维空间，xyz 投影体积可以经过零，真正的三维材料体积没有消失。</p>
+  <p>计算体积的四点初始 xyz 坐标为 <code>(0,-0.2,0)、(0.5,-0.2,0)、(0,0.3,0)、(0,-0.2,0.24)</code>，w 均为 0；前三点在掌内，最后一点在凸起的红标记内。</p>
+  <p>本例只证明嵌在四维中的三维手可翻转，不声称四维手性物体也能在 SO(4) 中变镜像。没有模拟生物材料，也不包含真实四维视觉或四维光学。</p>
+  <p><a href="../docs/intuition-research.md">完整研究与推导</a> · <a href="tesseract-net.html">另一个实验：折叠八个立方体胞</a></p>
+</details>
+<script>
+(function (global) {
+  'use strict';
+  function rotate(p, plane, angle) {
+    const axes = { x: 0, y: 1, z: 2, w: 3 };
+    const i = axes[plane[0]], j = axes[plane[1]];
+    const q = p.slice(), c = Math.cos(angle), s = Math.sin(angle);
+    q[i] = c * p[i] - s * p[j];
+    q[j] = s * p[i] + c * p[j];
+    return q;
+  }
+  function box(center, half, tilt, marker) {
+    const vertices = Array.from({ length: 8 }, function (_, i) {
+      const p = rotate([(i & 1 ? 1 : -1) * half[0], (i & 2 ? 1 : -1) * half[1],
+        (i & 4 ? 1 : -1) * half[2], 0], 'xy', tilt);
+      return p.map(function (v, axis) { return v + (center[axis] || 0); });
+    });
+    const faces = [
+      { ids: [0, 2, 3, 1], color: '#557baf' },
+      { ids: [4, 5, 7, 6], color: '#e8b285' },
+      { ids: [0, 1, 5, 4], color: '#a47e68' },
+      { ids: [2, 6, 7, 3], color: '#f2c9a8' },
+      { ids: [0, 4, 6, 2], color: '#ac8c78' },
+      { ids: [1, 3, 7, 5], color: '#c69b79' }
+    ];
+    if (marker) faces.forEach(function (f) { f.color = marker; });
+    return { vertices: vertices, faces: faces };
+  }
+  const hand = [
+    box([0, -0.15, 0], [0.64, 0.65, 0.2], 0),
+    box([0, -1.07, 0], [0.36, 0.3, 0.17], 0),
+    box([0.84, -0.06, 0], [0.19, 0.58, 0.16], -0.7),
+    box([0, -0.25, 0.235], [0.12, 0.12, 0.035], 0, '#f35858'),
+    box([-0.19, -0.25, -0.235], [0.08, 0.12, 0.035], 0, '#8dd5ff'),
+    box([0.19, -0.25, -0.235], [0.08, 0.12, 0.035], 0, '#8dd5ff')
+  ];
+  [-0.48, -0.16, 0.16, 0.48].forEach(function (x, i) {
+    const length = [0.73, 1.1, 1.23, 1.02][i];
+    hand.push(box([x, 0.4 + length / 2, 0], [0.125, length / 2, 0.15], 0));
+  });
+  const witness = [[0, -0.2, 0, 0], [0.5, -0.2, 0, 0],
+    [0, 0.3, 0, 0], [0, -0.2, 0.24, 0]];
+  const pair = [[-0.6, -0.2, 0, 0], [0.6, -0.2, 0, 0]];
+  function volume(points) {
+    const a = points[1].map(function (v, i) { return v - points[0][i]; });
+    const b = points[2].map(function (v, i) { return v - points[0][i]; });
+    const c = points[3].map(function (v, i) { return v - points[0][i]; });
+    return (a[0] * (b[1] * c[2] - b[2] * c[1])
+      - a[1] * (b[0] * c[2] - b[2] * c[0])
+      + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6;
+  }
+  global.ChiralityMath = { rotate: rotate, hand: hand, witness: witness, pair: pair, volume: volume };
+})(window);
+</script>
+<script>
+(function () {
+  'use strict';
+  const model = window.ChiralityMath;
+  const el = function (id) { return document.getElementById(id); };
+  const canvases = ['moving', 'target', 'trace'].map(el);
+  const contexts = canvases.map(function (cv) { return cv.getContext('2d'); });
+  if (contexts.some(function (ctx) { return !ctx; })) {
+    el('fatal').hidden = false;
+    el('fatal').textContent = '浏览器未能创建 Canvas 2D；无法显示这个实验。';
+    throw new Error('Canvas 2D unavailable');
+  }
+  let playing = false, last = null, animation = null, playbackAngle = 0;
+  function prepare(cv, ctx) {
+    const r = cv.getBoundingClientRect(), dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cv.width = Math.round(r.width * dpr);
+    cv.height = Math.round(r.height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = '#10141f';
+    ctx.fillRect(0, 0, r.width, r.height);
+    return r;
+  }
+  function camera(p) {
+    const mode = el('camera').value;
+    const yaw = mode === 'front' ? 0 : mode === 'back' ? Math.PI : 0.42;
+    const pitch = mode === 'oblique' ? -0.22 : 0;
+    const x = p[0] * Math.cos(yaw) + p[2] * Math.sin(yaw);
+    const z = -p[0] * Math.sin(yaw) + p[2] * Math.cos(yaw);
+    return [x, p[1] * Math.cos(pitch) - z * Math.sin(pitch),
+      -(p[1] * Math.sin(pitch) + z * Math.cos(pitch))];
+  }
+  function handView(cv, ctx, transform) {
+    const r = prepare(cv, ctx), scale = Math.min(r.width / 3.8, r.height / 3.8);
+    const project = function (p) {
+      const q = camera(p);
+      return [r.width / 2 + q[0] * scale, r.height / 2 + 10 - q[1] * scale, q[2]];
+    };
+    const faces = [];
+    model.hand.forEach(function (part) {
+      const points = part.vertices.map(transform).map(project);
+      part.faces.forEach(function (face) {
+        const ps = face.ids.map(function (i) { return points[i]; });
+        faces.push({ points: ps, color: face.color,
+          depth: ps.reduce(function (sum, p) { return sum + p[2]; }, 0) / 4 });
+      });
+    });
+    faces.sort(function (a, b) { return b.depth - a.depth; });
+    faces.forEach(function (f) {
+      ctx.beginPath();
+      f.points.forEach(function (p, i) { if (i === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]); });
+      ctx.closePath();
+      ctx.fillStyle = f.color;
+      ctx.fill();
+      ctx.strokeStyle = '#302c32';
+      ctx.lineWidth = 0.6;
+      ctx.stroke();
+    });
+    ctx.font = '12px system-ui';
+    ctx.fillStyle = '#9baac0';
+    ctx.fillText('材料颜色固定；没有用颜色编码 w', 12, r.height - 12);
+  }
+  function trace(angle, mode) {
+    const ctx = contexts[2], r = prepare(canvases[2], ctx);
+    const scale = Math.min(r.width, r.height) * 0.55;
+    const px = function (p) { return [r.width / 2 + scale * p[0], r.height / 2 - scale * p[3]]; };
+    ctx.strokeStyle = '#43516b';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(16, r.height / 2); ctx.lineTo(r.width - 16, r.height / 2);
+    ctx.moveTo(r.width / 2, 16); ctx.lineTo(r.width / 2, r.height - 16); ctx.stroke();
+    ctx.font = '13px ui-monospace, monospace';
+    ctx.fillStyle = '#b9c8da';
+    ctx.fillText('x', r.width - 20, r.height / 2 - 8);
+    ctx.fillText('w', r.width / 2 + 8, 20);
+    model.pair.forEach(function (p, i) {
+      ctx.strokeStyle = i === 0 ? '#8dd5ff' : '#ffd24a';
+      ctx.setLineDash([3, 4]);
+      ctx.beginPath();
+      for (let step = 0; step <= 80; step++) {
+        const q = px(model.rotate(p, mode, Math.PI * step / 80));
+        if (step === 0) ctx.moveTo(q[0], q[1]); else ctx.lineTo(q[0], q[1]);
+      }
+      ctx.stroke(); ctx.setLineDash([]);
+      const q = px(model.rotate(p, mode, angle));
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.beginPath(); ctx.arc(q[0], q[1], 5, 0, 2 * Math.PI); ctx.fill();
+      ctx.fillText(i === 0 ? 'P' : 'Q', q[0] + 9, q[1] - 8);
+    });
+  }
+  function draw() {
+    const degrees = Number(el('angle').value), angle = degrees * Math.PI / 180, mode = el('mode').value;
+    const transform = function (p) { return model.rotate(p, mode, angle); };
+    handView(canvases[0], contexts[0], transform);
+    handView(canvases[1], contexts[1], function (p) { return [-p[0], p[1], p[2], p[3]]; });
+    trace(angle, mode);
+    const pair = model.pair.map(transform), delta = pair[1].map(function (v, i) { return v - pair[0][i]; });
+    const length = Math.hypot.apply(null, delta);
+    el('angle-value').textContent = degrees.toFixed(1) + '°';
+    el('distance').textContent = '|PQ|₄ = ' + length.toFixed(3) + '（恒定）；Δx = '
+      + delta[0].toFixed(3) + '，Δw = ' + delta[3].toFixed(3) + '。';
+    const ratio = model.volume(model.witness.map(transform)) / model.volume(model.witness);
+    el('volume').textContent = 'xyz 投影 / 初始 = ' + ratio.toFixed(3) + '；镜像目标 = -1。';
+    let status;
+    if (mode !== 'xw') {
+      status = '三维对照：定向体积始终为正。即使轮廓相像，掌背和材料点也不能同时匹配镜像。';
+    } else if (degrees === 180) {
+      status = '匹配：所有材料点都回到 w=0，左图与镜像目标完全重合；掌心仍然是掌心。';
+    } else if (degrees === 90) {
+      status = '关键一刻：xyz 投影失去一个方向，但 P、Q 在 w 上仍相距 1.2；手并没有被压扁。';
+    } else {
+      status = '只转 xw 平面；y、z 不动。先预测：回到 w=0 时，手背标记会不会跑到掌心？';
+    }
+    if (el('status').textContent !== status) el('status').textContent = status;
+  }
+  function stop() {
+    playing = false; last = null;
+    if (animation !== null) cancelAnimationFrame(animation);
+    animation = null; el('play').textContent = '播放一次';
+  }
+  function setAngle(value) { stop(); el('angle').value = String(value); draw(); }
+  function frame(now) {
+    animation = null;
+    if (!playing) return;
+    if (last !== null) playbackAngle = Math.min(180, playbackAngle + Math.min(now - last, 50) * 0.025);
+    el('angle').value = String(playbackAngle);
+    last = now; draw();
+    if (playbackAngle >= 180) stop();
+    else animation = requestAnimationFrame(frame);
+  }
+  el('play').addEventListener('click', function () {
+    if (playing) { stop(); return; }
+    if (Number(el('angle').value) === 180) el('angle').value = '0';
+    playbackAngle = Number(el('angle').value);
+    playing = true; last = null; el('play').textContent = '暂停'; animation = requestAnimationFrame(frame);
+  });
+  el('angle').addEventListener('input', function () { stop(); draw(); });
+  el('mode').addEventListener('change', function () { stop(); draw(); });
+  el('camera').addEventListener('change', draw);
+  el('reset').addEventListener('click', function () { setAngle(0); });
+  el('middle').addEventListener('click', function () { setAngle(90); });
+  el('end').addEventListener('click', function () { setAngle(180); });
+  document.addEventListener('visibilitychange', function () { if (document.hidden) stop(); });
+  window.addEventListener('resize', draw);
+  draw();
+})();
+</script>
+</body>
+</html>

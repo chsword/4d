@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>八个立方体怎样封闭一个四维体</title>
+<style>
+  :root { color-scheme: dark; font: 15px/1.65 system-ui, sans-serif; color: #dbe4f2; background: #0a0c14; }
+  * { box-sizing: border-box; }
+  body { max-width: 1160px; margin: auto; padding: 24px; }
+  h1 { font-size: 26px; line-height: 1.3; margin: 0 0 12px; }
+  p { margin: 8px 0 16px; }
+  .muted { color: #9baac0; }
+  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 16px 0; }
+  button, select { font: inherit; color: inherit; background: #1a2132; border: 1px solid #43516b; border-radius: 6px; padding: 8px 12px; min-height: 44px; }
+  button { cursor: pointer; }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #ffd24a; outline-offset: 3px; }
+  button[aria-pressed="true"] { outline: 2px solid #ffd24a; }
+  input[type="range"] { flex: 1; min-width: 150px; accent-color: #ffd24a; }
+  output, code { font-family: ui-monospace, monospace; }
+  .stage { display: grid; grid-template-columns: minmax(0, 1fr) 285px; gap: 20px; }
+  canvas { display: block; width: 100%; height: 570px; background: #10141f; border: 1px solid #29334a; }
+  #local { height: 235px; }
+  #cells { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  #cells button { padding: 6px; }
+  #status { color: #ffd24a; min-height: 3.3em; }
+  #fatal { background: #571f2b; padding: 12px; }
+  details { margin-top: 24px; border-top: 1px solid #29334a; padding-top: 16px; }
+  a { color: #8dd5ff; }
+  @media (max-width: 760px) {
+    body { padding: 16px; }
+    .stage { grid-template-columns: 1fr; }
+    canvas { height: 430px; }
+    h1 { font-size: 23px; }
+  }
+</style>
+</head>
+<body>
+<h1>不是“盒中盒”：八个一样大的立方体胞</h1>
+<p class="muted">先认出一个胞，再跟着它折起来。这里展开的是四维体的三维边界，不是把四维内部压成八个方块。</p>
+<p id="fatal" role="alert" hidden></p>
+<div class="controls">
+  <button id="play" type="button">折叠一次</button>
+  <button id="open" type="button">展开图</button>
+  <button id="sides" type="button">六侧胞折好</button>
+  <button id="closed" type="button">完全闭合</button>
+  <label for="progress">折叠进度</label>
+  <input id="progress" type="range" min="0" max="1000" step="1" value="0">
+  <output id="progress-value" for="progress">0%</output>
+</div>
+<div class="stage">
+  <div>
+    <canvas id="net" aria-label="八胞展开图的四维刚性铰接折叠动画"></canvas>
+    <div class="controls">
+      <label for="yaw">观察相机水平角</label><input id="yaw" type="range" min="-180" max="180" value="32">
+      <label for="pitch">俯仰</label><input id="pitch" type="range" min="-65" max="65" value="23">
+    </div>
+    <p class="muted">相机只转三维观察方向，不改变折叠。固定视距的 4D 透视使胞看似大小不同；右边的本地尺子不受投影影响。线框重叠不代表胞穿透。</p>
+  </div>
+  <aside>
+    <p><strong>选择一个胞：</strong>编号和材质不随 w 改变。</p>
+    <div id="cells">
+      <button type="button" data-cell="0" aria-pressed="true">A</button>
+      <button type="button" data-cell="1" aria-pressed="false">B</button>
+      <button type="button" data-cell="2" aria-pressed="false">C</button>
+      <button type="button" data-cell="3" aria-pressed="false">D</button>
+      <button type="button" data-cell="4" aria-pressed="false">E</button>
+      <button type="button" data-cell="5" aria-pressed="false">F</button>
+      <button type="button" data-cell="6" aria-pressed="false">G</button>
+      <button type="button" data-cell="7" aria-pressed="false">H</button>
+    </div>
+    <p id="cell-info"></p>
+    <canvas id="local" aria-label="选中胞的本地三维立方体及内部材料点"></canvas>
+    <p><strong>这整个立方体就是一块“表面”。</strong>小点位于胞的三维内部，不是位于小立方体的二维面上。</p>
+    <p id="neighbors"></p>
+    <p id="metric"></p>
+  </aside>
+</div>
+<p id="status" role="status" aria-live="polite"></p>
+<details>
+  <summary>折叠不是顶点插值；怎样确认它真的闭合？</summary>
+  <p>边长为 2。A 固定在 w=0；六个相邻胞围绕公共正方形铰链旋转 90°，成为 x=±1、y=±1、z=±1 的六个胞。H 起初挂在 E 外侧，由 E 带着运动；最后 H 再绕自己的铰链折 90°，成为 w=2 的盖胞。</p>
+  <p>两个阶段中每个胞始终是同一个刚性立方体；这是多个局部 SO(4) 旋转，不是让整个展开图作一次全局旋转。三维中不能完成的正是这些立方体绕二维铰链的翻折。</p>
+  <p>闭合时：8 个胞，24 个共享正方形面，32 条棱，16 个顶点。每个正方形恰好属于两个胞，没有敞开的缝；八个胞的并集是 <code>[-1,1]³ × [0,2]</code> 的边界。每个胞都有六个邻胞，唯一不相邻的是它的对胞。</p>
+  <p>上图有意使用边线和选中胞的轻填色，不做真实四维不透明表面渲染。右图是本地坐标图，不是另一个四维观察相机；当前阶段未闭合时，“邻胞”仍指最终闭合后的邻接关系。</p>
+  <p><a href="../docs/intuition-research.md">完整研究、铰链公式与取舍</a> · <a href="chirality.html">手性翻转实验</a></p>
+</details>
+<script>
+(function (global) {
+  'use strict';
+  const colors = ['#8dd5ff', '#e9a976', '#adce8c', '#ccafe8', '#f3d16e', '#8ad5bf', '#e3a3b1', '#a9b8fa'];
+  const cells = [
+    { name: 'A', axis: 3, sign: -1, center: [0, 0, 0, 0], fixed: 'w=0' },
+    { name: 'B', axis: 0, sign: -1, center: [-2, 0, 0, 0], fixed: 'x=-1' },
+    { name: 'C', axis: 0, sign: 1, center: [2, 0, 0, 0], fixed: 'x=+1' },
+    { name: 'D', axis: 1, sign: -1, center: [0, -2, 0, 0], fixed: 'y=-1' },
+    { name: 'E', axis: 1, sign: 1, center: [0, 2, 0, 0], fixed: 'y=+1' },
+    { name: 'F', axis: 2, sign: -1, center: [0, 0, -2, 0], fixed: 'z=-1' },
+    { name: 'G', axis: 2, sign: 1, center: [0, 0, 2, 0], fixed: 'z=+1' },
+    { name: 'H', axis: 3, sign: 1, center: [0, 4, 0, 0], fixed: 'w=2' }
+  ];
+  const corners = Array.from({ length: 8 }, function (_, i) {
+    return [i & 1 ? 1 : -1, i & 2 ? 1 : -1, i & 4 ? 1 : -1, 0];
+  });
+  const edges = [];
+  for (let i = 0; i < 8; i++) {
+    for (let axis = 0; axis < 3; axis++) {
+      const j = i ^ (1 << axis);
+      if (j > i) edges.push([i, j]);
+    }
+  }
+  const faces = [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4],
+    [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]];
+  function hinge(p, axis, pivot, angle) {
+    const q = p.slice(), x = p[axis] - pivot, c = Math.cos(angle), s = Math.sin(angle);
+    q[axis] = pivot + c * x - s * p[3];
+    q[3] = s * x + c * p[3];
+    return q;
+  }
+  function point(index, local, t) {
+    const cell = cells[index], theta = Math.min(2 * t, 1) * Math.PI / 2;
+    const phi = Math.max(2 * t - 1, 0) * Math.PI / 2;
+    let p = local.map(function (v, axis) { return v + cell.center[axis]; });
+    if (index === 0) return p;
+    if (index === 7) {
+      p = hinge(p, 1, 3, phi);
+      return hinge(p, 1, 1, theta);
+    }
+    return hinge(p, cell.axis, cell.sign, cell.sign * theta);
+  }
+  function vertices(index, t) { return corners.map(function (p) { return point(index, p, t); }); }
+  function neighbors(index) {
+    return cells.map(function (_, i) { return i; }).filter(function (i) {
+      return cells[i].axis !== cells[index].axis;
+    });
+  }
+  global.NetMath = { cells: cells, colors: colors, corners: corners, edges: edges, faces: faces,
+    hinge: hinge, point: point, vertices: vertices, neighbors: neighbors };
+})(window);
+</script>
+<script>
+(function () {
+  'use strict';
+  const model = window.NetMath, el = function (id) { return document.getElementById(id); };
+  const cv = el('net'), local = el('local'), ctx = cv.getContext('2d'), lc = local.getContext('2d');
+  if (!ctx || !lc) {
+    el('fatal').hidden = false;
+    el('fatal').textContent = '浏览器未能创建 Canvas 2D；无法显示折叠实验。';
+    throw new Error('Canvas 2D unavailable');
+  }
+  let selected = 0, playing = false, last = null, animation = null, playbackProgress = 0;
+  function prepare(canvas, context) {
+    const r = canvas.getBoundingClientRect(), dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.round(r.width * dpr); canvas.height = Math.round(r.height * dpr);
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    context.fillStyle = '#10141f'; context.fillRect(0, 0, r.width, r.height);
+    return r;
+  }
+  function project3(p, yaw, pitch) {
+    const x = Math.cos(yaw) * p[0] + Math.sin(yaw) * p[2];
+    const z = -Math.sin(yaw) * p[0] + Math.cos(yaw) * p[2];
+    return [x, Math.cos(pitch) * p[1] - Math.sin(pitch) * z,
+      -(Math.sin(pitch) * p[1] + Math.cos(pitch) * z)];
+  }
+  function path(context, ps) {
+    context.beginPath();
+    ps.forEach(function (p, i) { if (i === 0) context.moveTo(p[0], p[1]); else context.lineTo(p[0], p[1]); });
+  }
+  function localView() {
+    const r = prepare(local, lc), scale = Math.min(r.width, r.height) * 0.29;
+    const pr = function (p) {
+      const q = project3(p, 0.48, 0.3);
+      return [r.width / 2 + q[0] * scale, r.height / 2 - q[1] * scale];
+    };
+    const ps = model.corners.map(pr);
+    lc.strokeStyle = model.colors[selected]; lc.lineWidth = 1.6;
+    model.edges.forEach(function (edge) { path(lc, edge.map(function (i) { return ps[i]; })); lc.stroke(); });
+    const probe = pr([0.15, -0.1, 0.2]);
+    lc.fillStyle = '#ffd24a'; lc.beginPath(); lc.arc(probe[0], probe[1], 5, 0, 2 * Math.PI); lc.fill();
+    lc.font = '12px system-ui'; lc.fillStyle = '#dbe4f2';
+    lc.fillText('胞内点 (0.15, -0.10, 0.20)', 12, r.height - 14);
+  }
+  function draw() {
+    const t = Number(el('progress').value) / 1000, r = prepare(cv, ctx);
+    const yaw = Number(el('yaw').value) * Math.PI / 180, pitch = Number(el('pitch').value) * Math.PI / 180;
+    const scale = Math.min(r.width / 10.5, r.height / 10.5);
+    const project = function (p) {
+      const k = 7 / (7 - (p[3] - 1));
+      const q = project3([p[0] * k, p[1] * k, p[2] * k], yaw, pitch);
+      return [r.width / 2 + q[0] * scale, r.height * 0.6 - q[1] * scale, q[2]];
+    };
+    const all = model.cells.map(function (_, i) { return model.vertices(i, t); });
+    const ps = all.map(function (verts) { return verts.map(project); });
+    model.faces.forEach(function (face) {
+      path(ctx, face.map(function (i) { return ps[selected][i]; }));
+      ctx.closePath(); ctx.fillStyle = model.colors[selected]; ctx.globalAlpha = 0.07; ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+    const lines = [];
+    model.cells.forEach(function (_, cell) {
+      model.edges.forEach(function (edge) {
+        const points = edge.map(function (i) { return ps[cell][i]; });
+        lines.push({ cell: cell, points: points, depth: (points[0][2] + points[1][2]) / 2 });
+      });
+    });
+    lines.sort(function (a, b) { return b.depth - a.depth; });
+    lines.forEach(function (line) {
+      path(ctx, line.points); ctx.strokeStyle = model.colors[line.cell];
+      ctx.globalAlpha = line.cell === selected ? 1 : 0.32;
+      ctx.lineWidth = line.cell === selected ? 2.8 : 1.2; ctx.stroke();
+    });
+    ctx.globalAlpha = 1;
+    model.cells.forEach(function (cell, i) {
+      const p = project(model.point(i, [0, 0, 0, 0], t));
+      const offset = i === 0 ? [-25, 20] : i === 7 ? [25, -20] : [0, 0];
+      const label = [p[0] + offset[0], p[1] + offset[1]];
+      if (i === 0 || i === 7) {
+        path(ctx, [p, label]); ctx.strokeStyle = model.colors[i]; ctx.lineWidth = 1; ctx.stroke();
+      }
+      ctx.fillStyle = '#10141f'; ctx.fillRect(label[0] - 11, label[1] - 12, 22, 24);
+      ctx.font = (selected === i ? 'bold ' : '') + '16px ui-monospace, monospace';
+      ctx.fillStyle = model.colors[i]; ctx.textAlign = 'center'; ctx.fillText(cell.name, label[0], label[1] + 5);
+    });
+    const probe = project(model.point(selected, [0.15, -0.1, 0.2, 0], t));
+    ctx.fillStyle = '#ffd24a'; ctx.beginPath(); ctx.arc(probe[0], probe[1], 4, 0, 2 * Math.PI); ctx.fill();
+    ctx.textAlign = 'left'; ctx.font = '12px system-ui'; ctx.fillStyle = '#9baac0';
+    ctx.fillText('固定编号 / 刚性胞 / 二维铰链 / 无自动缩放', 14, r.height - 16);
+    const cell = model.cells[selected], neighbors = model.neighbors(selected);
+    const opposite = model.cells.find(function (c) { return c.axis === cell.axis && c.sign !== cell.sign; });
+    el('cell-info').textContent = cell.name + ' 胞：闭合后位于 ' + cell.fixed + '。';
+    el('neighbors').textContent = '闭合后的六个邻胞：' + neighbors.map(function (i) { return model.cells[i].name; }).join('、')
+      + '。只有 ' + opposite.name + ' 是不相邻的对胞。';
+    const edge = all[selected][0].map(function (v, i) { return v - all[selected][1][i]; });
+    el('metric').textContent = '四维实测棱长：' + Math.hypot.apply(null, edge).toFixed(6) + '；每胞三维体积恒为 8。';
+    el('progress-value').textContent = (t * 100).toFixed(1) + '%';
+    let status;
+    if (t === 0) status = '展开：8 个胞全在 w=0。保留 7 个铰链；其余 17 对待粘合正方形尚未接合。';
+    else if (t < 0.5) status = '阶段一：六侧胞沿二维铰链离开 w=0；H 由 E 带着走，没有单独缩放或挤压。';
+    else if (t < 1) status = '阶段二：六侧胞已折好。H 从 w>=2 的外侧合上，补上最后一个立方体胞。';
+    else status = '闭合：8 胞 / 24 面 / 32 棱 / 16 顶点。每个正方形都有两个胞相接，不是八个互相嵌套的盒子。';
+    if (el('status').textContent !== status) el('status').textContent = status;
+    localView();
+  }
+  function stop() {
+    playing = false; last = null;
+    if (animation !== null) cancelAnimationFrame(animation);
+    animation = null; el('play').textContent = '折叠一次';
+  }
+  function setProgress(value) { stop(); el('progress').value = String(value); draw(); }
+  function frame(now) {
+    animation = null;
+    if (!playing) return;
+    if (last !== null) playbackProgress = Math.min(1000, playbackProgress + Math.min(now - last, 50) * 0.09);
+    el('progress').value = String(playbackProgress);
+    last = now; draw();
+    if (playbackProgress >= 1000) stop(); else animation = requestAnimationFrame(frame);
+  }
+  el('play').addEventListener('click', function () {
+    if (playing) { stop(); return; }
+    if (Number(el('progress').value) === 1000) el('progress').value = '0';
+    playbackProgress = Number(el('progress').value);
+    playing = true; last = null; el('play').textContent = '暂停'; animation = requestAnimationFrame(frame);
+  });
+  el('open').addEventListener('click', function () { setProgress(0); });
+  el('sides').addEventListener('click', function () { setProgress(500); });
+  el('closed').addEventListener('click', function () { setProgress(1000); });
+  el('progress').addEventListener('input', function () { stop(); draw(); });
+  ['yaw', 'pitch'].forEach(function (id) { el(id).addEventListener('input', draw); });
+  document.querySelectorAll('[data-cell]').forEach(function (button) {
+    button.addEventListener('click', function () {
+      selected = Number(button.dataset.cell);
+      document.querySelectorAll('[data-cell]').forEach(function (b) {
+        b.setAttribute('aria-pressed', String(Number(b.dataset.cell) === selected));
+      });
+      draw();
+    });
+  });
+  document.addEventListener('visibilitychange', function () { if (document.hidden) stop(); });
+  window.addEventListener('resize', draw);
+  draw();
+})();
+</script>
+</body>
+</html>
