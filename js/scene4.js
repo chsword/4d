@@ -144,8 +144,36 @@
     if (length < 1e-12) throw new Error('Undefined camera contact normal');
     return M4.scale(n, 1 / length);
   }
+  function nonconvexAdvance(entry, p, direction, gap) {
+    var q = M4.sub(p, entry.data.center), params = entry.data.params;
+    var a, b, da, db, minRadius;
+    if (entry.data.type === 'spheritorus') {
+      var rho = Math.hypot(q[0], q[1], q[2]);
+      if (rho < 1e-10) return gap;
+      a = rho - params.R; b = q[3]; minRadius = rho;
+      da = (q[0] * direction[0] + q[1] * direction[1] + q[2] * direction[2]) / rho;
+      db = direction[3];
+    } else {
+      var r1 = Math.hypot(q[0], q[1]), r2 = Math.hypot(q[2], q[3]);
+      minRadius = Math.min(r1, r2);
+      if (minRadius < 1e-10) return gap;
+      a = r1 - params.R1; b = r2 - params.R2;
+      da = (q[0] * direction[0] + q[1] * direction[1]) / r1;
+      db = (q[2] * direction[2] + q[3] * direction[3]) / r2;
+    }
+    // Tube-distance Hessians have negative eigenvalues no smaller than
+    // -1/rho (the base radial directions). For s <= minRadius/2,
+    // f(p+s*d) >= f(p) + slope*s - curvature*s*s/2 up to first contact.
+    // This certified quadratic bound progresses even on a departing tangent;
+    // the global 1-Lipschitz bound alone can require arbitrarily many steps.
+    var slope = (a * da + b * db) / Math.hypot(a, b), curvature = 2 / minRadius;
+    var root = Math.sqrt(slope * slope + 2 * curvature * gap);
+    var step = slope < 0 ? 2 * gap / (root - slope) : (slope + root) / curvature;
+    return Math.max(gap, Math.min(minRadius / 2, step));
+  }
   function sweep(entry, p, delta, radius) {
     var length = M4.len(delta), t = 0;
+    var direction = M4.scale(delta, 1 / length);
     var padding = SKIN;
     // Leave positive clearance for a tangent ray; tracing the same offset
     // surface from exact contact would make zero progress.
@@ -173,7 +201,7 @@
         gap = clearance * 0.5;
       }
       if (!entry.convex && gap <= SKIN && closing <= 1e-12) gap = Math.max(gap, clearance * 0.5);
-      var step = gap / (entry.convex ? closing : length);
+      var step = entry.convex ? gap / closing : nonconvexAdvance(entry, point, direction, gap) / length;
       if (t + step > 1) return null;
       t += step * 0.99;
     }

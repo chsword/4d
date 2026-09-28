@@ -2,6 +2,7 @@
 
 global.window = global;
 require('../js/m4.js');
+require('../js/section.js');
 require('../js/scene4.js');
 require('../js/view-slice.js');
 require('../js/view-linked.js');
@@ -274,8 +275,9 @@ test('SliceView.step uses swept collision at large dt and honors rotated 4D move
   near(rotated.cam[3], 1.950001, 2e-9, 'rotated forward hits fourth face');
 });
 
-test('400 seeded nonconvex trajectories preserve clearance and terminate at concave contacts', function () {
-  seed = 51;
+[51, 42, 20260928].forEach(function (initialSeed) {
+test('400 seeded nonconvex trajectories preserve clearance and terminate at concave contacts, seed=' + initialSeed, function () {
+  seed = initialSeed;
   S.gallery.objects.filter(function (o) { return o.type === 'spheritorus' || o.type === 'tiger'; }).forEach(function (o) {
     var scene = isolated(o);
     for (var i = 0; i < 200; i++) {
@@ -290,6 +292,22 @@ test('400 seeded nonconvex trajectories preserve clearance and terminate at conc
       assert(distance >= 0.35 - 1e-9, 'independent analytic clearance: ' + o.id + ' case ' + i);
       assert(M4.len(M4.sub(out, p)) <= M4.len(delta) + 1e-9, 'contact projection cannot add travel');
     }
+  });
+});
+});
+
+test('F03 small gallery displacement leaves a concave tangent with certified clearance', function () {
+  var p = [4.116084859822875, 0.06933066034689572, -9.764552097418338, 0.038078714860602936];
+  var d = [0.10130974465282634, -0.12990554473362864, -0.00947153369197622, -0.18724242721218615];
+  assert(S.gallery.sdf(p) - 0.35 > 0.0014, 'safe initial position');
+  [1, 20, 50].forEach(function (count) {
+    var q = p.slice();
+    for (var i = 0; i < count; i++) {
+      q = S.gallery.move(q, M4.scale(d, 1 / count), 0.35);
+      assert(S.gallery.sdf(q) >= 0.35 - 1e-10, 'no penetration');
+    }
+    assert(M4.len(M4.sub(q, p)) > 0.05, 'must make real progress, not just return the start');
+    assert(M4.len(M4.sub(q, p)) <= M4.len(d) + 1e-9, 'no added travel');
   });
 });
 
@@ -533,6 +551,95 @@ test('application wiring: linked movement, sliders, tab cleanup, resize and fram
   select('projection'); frame(1); select('rings'); frame(1);
   assert(nodes['rg-time-val'].textContent === ringTime, 'tab switch pauses rings');
   assert(b.errors.length === 0, 'no runtime failures during live frames');
+});
+
+test('F01/F02 real buttons control actual matrices and all four panels, not just slider values', function () {
+  var b = browser(), env = b.env, n = b.nodes, time = 0, matrices = [], materials = [];
+  function frame(count) { for (var i = 0; i < count; i++) env.tick(time += 50); }
+  function select(name) { b.tabs.find(function (t) { return t.dataset.view === name; }).emit('click'); }
+  var draw = env.ProjectionView.prototype.draw;
+  env.ProjectionView.prototype.draw = function () { matrices.push(this.rotor()); draw.call(this); };
+  select('projection'); frame(60); n['proj-iso'].emit('click'); frame(1);
+  var A = matrices[matrices.length - 1]; frame(10); var B = matrices[matrices.length - 1];
+  for (var i = 0; i < 4; i++) near(M4.dot(M4.col(A, i), M4.col(B, i)), Math.cos(0.2), 2e-13, 'actual isoclinic increment');
+  ['cubeVertices', 'tesseractVertices'].forEach(function (name) {
+    var fn = env.AnalogyView.prototype[name];
+    env.AnalogyView.prototype[name] = function () { var points = fn.call(this); materials.push(points); return points; };
+  });
+  select('analogy'); frame(5);
+  n.spin.checked = false; n.spin.emit('change');
+  n.autok.checked = false; n.autok.emit('change');
+  n.kslider.value = '0.2'; n.kslider.emit('input');
+  materials = []; frame(1); var before = JSON.stringify(materials);
+  materials = []; frame(1);
+  assert(materials.length === 4 && JSON.stringify(materials) === before, 'four fixed material coordinate sets');
+  n.autok.checked = true; n.autok.emit('change');
+  var kValues = [], step = env.AnalogyView.prototype.step;
+  env.AnalogyView.prototype.step = function (dt) { step.call(this, dt); kValues.push(this.k); };
+  materials = []; frame(1);
+  assert(JSON.stringify(materials) === before, 'scan must not rotate any panel');
+  frame(2); assert(kValues[0] !== kValues[2], 'auto k is independent');
+  assert(b.errors.length === 0, 'controls remain operational');
+});
+
+test('F04 tutorial button puts the red ball inside the actual default frustum and Q/E sweeps it', function () {
+  var b = browser(), env = b.env, n = b.nodes, time = 0;
+  b.tabs.find(function (t) { return t.dataset.view === 'slice'; }).emit('click');
+  env.document.activeElement = n['slice-glome'];
+  n['slice-glome'].emit('click'); env.tick(time += 50);
+  assert(env.document.activeElement === null, 'preset releases button focus so Q/E are not swallowed');
+  var u = n['cv-slice'].gl.uniforms, ball = S.gallery.objects.find(function (o) { return o.id === 'glome'; });
+  assert(!n.wtint.checked && !n.xray.checked, 'red material, not a ghost or tint');
+  [0, 1, -1].forEach(function (w) {
+    n.wslider.value = String(w); n.wslider.emit('input'); env.tick(time += 50);
+    var to = M4.sub(ball.center, u.uCam);
+    var x = M4.dot(to, u.uAx), y = M4.dot(to, u.uAy), z = M4.dot(to, u.uAz);
+    [320 / 420, 390 / 420, 965 / 738].forEach(function (aspect) {
+      var angularRadius = Math.asin(Math.sqrt(ball.params.r * ball.params.r - w * w) / z);
+      assert(z > 0 && Math.abs(Math.atan2(x, z)) + angularRadius < Math.atan(aspect / (2 * u.uFocal)),
+        'entire red cross-section fits horizontal frustum');
+      assert(Math.abs(Math.atan2(y, z)) + angularRadius < Math.atan(1 / (2 * u.uFocal)),
+        'entire red cross-section fits vertical frustum');
+    });
+    var hit = S.gallery.raycast(u.uCam, u.uAz);
+    assert(hit && hit.object.id === 'glome', 'visible center ray hits red sphere before any occluder');
+  });
+  n['slice-glome'].emit('click');
+  env.emit('keydown', { code: 'KeyE', target: { tagName: 'BODY' }, preventDefault: function () {} });
+  for (var i = 0; i < 6; i++) env.tick(time += 50);
+  env.emit('keyup', { code: 'KeyE' });
+  assert(u.uCam[3] > ball.params.r, 'actual E key leaves the sphere');
+  var hit = S.gallery.raycast(u.uCam, u.uAz);
+  assert(!hit || hit.object.id !== 'glome', 'sphere disappears from the view');
+  assert(b.errors.length === 0, 'tutorial no errors');
+});
+
+test('F16/F03 runtime failures are isolated and explicit resets resume physics and camera updates', function () {
+  var b = browser(), env = b.env, n = b.nodes, time = 0;
+  function select(name) { b.tabs.find(function (t) { return t.dataset.view === name; }).emit('click'); }
+  function frame() { env.tick(time += 50); }
+  select('physics');
+  var step = env.Physics4.World4.prototype.step, steps = 0;
+  env.Physics4.World4.prototype.step = function () { throw new Error('injected convergence failure'); };
+  frame();
+  assert(n.fatal.style.display === 'block', 'failure is visible');
+  env.Physics4.World4.prototype.step = function (dt) { steps++; step.call(this, dt); };
+  frame(); assert(steps === 0, 'failed physics stays stopped until explicit reset');
+  select('projection'); frame(); assert(n.fatal.style.display === 'none', 'other tab remains usable');
+  select('physics'); assert(n.fatal.style.display === 'block', 'error stays on affected tab');
+  n['physics-reset'].emit('click'); frame();
+  assert(steps > 0 && n.fatal.style.display === 'none', 'scene reset clears error and resumes');
+  select('slice');
+  var move = env.SliceView.prototype.moveCamera;
+  env.SliceView.prototype.moveCamera = function () { throw new Error('injected camera failure'); };
+  env.emit('keydown', { code: 'KeyW', target: { tagName: 'BODY' }, preventDefault: function () {} });
+  frame(); assert(n.fatal.style.display === 'block', 'camera failure is visible');
+  env.SliceView.prototype.moveCamera = move;
+  n['slice-reset'].emit('click'); frame();
+  assert(n.fatal.style.display === 'none', 'camera reset recovers');
+  env.emit('keydown', { code: 'KeyW', target: { tagName: 'BODY' }, preventDefault: function () {} });
+  frame(); assert(n['cv-slice'].gl.uniforms.uCam[2] < 0, 'movement resumes after reset');
+  assert(b.errors.length === 2, 'only explicitly injected errors');
 });
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');

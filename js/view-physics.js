@@ -67,6 +67,11 @@
   PhysicsView.prototype.resetScene = function () {
     this.accumulator = 0;
     this.spawnCount = 0;
+    this.keys = {};
+    this._rPressedAt = null;
+    this._rTurning = false;
+    this.world._collisionContacts = [];
+    this.world._solverResult = null;
     this.world.bodies = [
       new RigidBody4({
         halfSize: [0.55, 0.8, 0.45, 1.05], position: [-2, 1.2, -8, 0],
@@ -94,6 +99,7 @@
         halfSize: [0.8, 0.5, 0.8, 0.9], position: [0.8, -1, -8, 0]
       })
     ].slice(0, this.maxBodies);
+    this.error = null;
   };
 
   PhysicsView.prototype.resetCamera = function () {

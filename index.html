@@ -42,6 +42,7 @@
   #stage { position: relative; min-height: 420px; background: #0a0c14; }
   #stage canvas { position: absolute; inset: 0; display: none; touch-action: none; }
   #stage canvas.active { display: block; }
+  #stage #cv-analogy { touch-action: pan-y; }
   #hud {
     position: absolute; left: 12px; top: 12px; display: none;
     font: 12px/1.5 ui-monospace, monospace; color: #cfe0f5;
@@ -202,7 +203,7 @@
         看 <b>B</b> 面板：平面人看到的多边形边数会从 3 跳到 4、5、6 再跳回去。
         他会说「这个东西在变形」，但其实立方体什么都没变，只是它和平面的交在换位置。<br><br>
         <b>C/D</b> 面板是同一件事升一维：我们看四维物体，看到的是一个会变形的<b>多面体</b>。
-        所谓「一个四维物体」，对我们来说就是 <b>D</b> 里那一整排三维形状的全体。
+        <b>D</b> 固定物体姿态，只抽取七个位置的截面；这些样本不是连续截面的全体。
       </div>
 
       <fieldset>
@@ -220,7 +221,7 @@
     <!-- ================= 投影 ================= -->
     <section class="panel" data-view="projection">
       <h2>② 投影法：4D → 3D → 2D</h2>
-      <p>屏幕是二维的，所以必须降两次维。好处是一眼看到整个形状的拓扑结构，
+      <p>这里采用两级投影，把全体顶点和棱映到屏幕上；重影和交叉可能掩盖原拓扑，
          代价是尺寸和角度全被扭曲 —— 超立方体那 8 个立方体胞其实全等，图上却大小悬殊。</p>
 
       <div class="row">
@@ -265,13 +266,13 @@
       </fieldset>
 
       <div class="note">
-        三维里旋转有一根<b>不动的轴</b>；四维里旋转有一个<b>不动的平面</b>。
+        三维旋转固定一根<b>轴</b>；四维<b>简单旋转</b>固定一个平面，一般双旋转没有非零固定向量。
         四个轴两两组合出 6 个平面，所以 4D 旋转有 6 个自由度（3D 只有 3 个）。<br><br>
         <b>xy / xz / yz</b> 是我们看得见的那三个「普通」旋转。
         <b>xw / yw / zw</b> 才是把第四维搅进来的那三个 —— 只有它们会让形状看起来
         「从自己内部翻出来」。<br><br>
-        <b>等倾双旋转</b>（xy 和 zw 同速）是四维独有的运动：没有任何一个点是静止的，
-        而且整个形状同时在两个互相垂直的平面里转。
+        <b>等倾双旋转</b>保留当前姿态，再施加 xy 和 zw 同速的增量。
+        非整周增量没有非零固定向量；每个向量都转过相同角度，原点不动。
       </div>
       <p style="font-size:12px">鼠标拖动 = 转第二级的三维相机；滚轮 = 缩放。</p>
     </section>
@@ -289,7 +290,10 @@
       </div>
       <div class="row"><label>第四维厚度染色</label><input id="wtint" type="checkbox" checked></div>
       <div class="row"><label>X 光（看隔壁切片）</label><input id="xray" type="checkbox"></div>
-      <div class="btns"><button id="slice-reset">回到原点</button></div>
+      <div class="btns">
+        <button id="slice-glome">开始红球实验</button>
+        <button id="slice-reset">回到原点 / 复位</button>
+      </div>
 
       <fieldset>
         <legend>操作</legend>
@@ -306,10 +310,11 @@
       </fieldset>
 
       <div class="note">
-        <b>先做这个</b>：站着别动，只按 <kbd>Q</kbd>/<kbd>E</kbd>。红球会凭空出现、长大、缩小、消失 ——
+        <b>先做这个</b>：点击「开始红球实验」，相机会安全地移到红球正前方。
+        站着别动，只按 <kbd>Q</kbd>/<kbd>E</kbd>（或拖动 w 滑块）。红球会缩小、消失，返回时出现、长大 ——
         它是个四维超球（glome），你只是在扫过它的一层层切片。地板棋盘格也会翻色，
         那是在告诉你「你确实在第四维上动了」。<br><br>
-        <b>再做这个</b>：先按 <kbd>D</kbd> 向右走到 x ≈ 2，避开正前方的黄色双圆柱，
+        <b>再做这个</b>：先「回到原点 / 复位」，按 <kbd>D</kbd> 向右走到 x ≈ 2，避开正前方的黄色双圆柱，
         再按 <kbd>W</kbd> 走到灰墙前。w=0 时确实会被挡住，斜走会沿墙滑动。
         墙占据 |w| ≤ 1.6，相机是半径 0.35 的四维球，中心不能贴到墙面上。
         按 <kbd>E</kbd> 把 w 推到 3，墙消失且不再挡路 —— 走过去，
@@ -571,6 +576,7 @@
 </main>
 
 <script src="js/m4.js"></script>
+<script src="js/section.js"></script>
 <script src="js/polytopes.js"></script>
 <script src="js/physics4.js"></script>
 <script src="js/collide4.js"></script>

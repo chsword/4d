@@ -11,7 +11,7 @@
  *   A  立方体 + 那张切割平面（我们这个三维视角看得见全貌）
  *   B  平面人视角：他只看到那个多边形
  *   C  同一个操作升一维：超立方体被超平面 w=k 切出来的三维多面体
- *   D  胶片：k 连续变化时，截面这一串形状 —— 这就是"整个四维物体"
+ *   D  胶片：同一姿态在七个 k 上的截面抽样，不是连续截面的全体
  */
 (function (global) {
   'use strict';
@@ -84,24 +84,18 @@
   /* 用超平面（第 axis 个坐标 = k）切一个"顶点 + 面（面记棱表）"结构。
      每个二维面被超平面切出一条线段，把这些线段拼起来就是截面的线框。 */
   function sliceFaces(verts, faces, axis, k) {
-    var segs = [];
-    for (var f = 0; f < faces.length; f++) {
-      var pts = [];
-      var es = faces[f];
-      for (var e = 0; e < es.length; e++) {
-        var A = verts[es[e][0]], B = verts[es[e][1]];
-        var da = A[axis] - k, db = B[axis] - k;
-        if ((da < 0 && db < 0) || (da > 0 && db > 0)) continue;
-        if (Math.abs(da - db) < 1e-9) continue;
-        var t = da / (da - db);
-        var p = [];
-        for (var c = 0; c < A.length; c++) p.push(A[c] + (B[c] - A[c]) * t);
-        pts.push(p);
-      }
-      if (pts.length >= 2) segs.push([pts[0], pts[1]]);
-      if (pts.length >= 4) segs.push([pts[2], pts[3]]);
-    }
+    var cut = Section4.cut(verts, faces, verts.map(function (p) { return p[axis] - k; }));
+    var segs = cut.edges.map(function (e) { return [cut.verts[e[0]], cut.verts[e[1]]]; });
+    segs.points = cut.verts;
+    segs.dimension = cut.dimension;
     return segs;
+  }
+
+  function sectionLabel(segs) {
+    if (segs.dimension < 0) return '空截面';
+    if (segs.dimension === 0) return '相切点（0 条棱）';
+    if (segs.dimension === 1) return '线段（' + segs.length + ' 条棱）';
+    return (segs.dimension === 2 ? '多边形' : '三维多面体') + '（' + segs.length + ' 条棱）';
   }
 
   /* ---------- 3x3 旋转 ---------- */
@@ -123,6 +117,7 @@
     this.k = 0.0;              // 切割位置
     this.autoK = true;
     this.t = 0;
+    this.scanTime = 0;
     this.spin = true;
     this.cubeYaw = 0.5;
     this.cubePitch = 0.35;
@@ -130,23 +125,36 @@
   }
 
   AnalogyView.prototype.step = function (dt) {
-    this.t += dt;
+    this.scanTime += dt;
     if (this.spin) {
+      this.t += dt;
       this.cubeYaw += dt * 0.35;
       this.cubePitch += dt * 0.21;
       this.cubeRoll += dt * 0.13;
     }
-    if (this.autoK) this.k = Math.sin(this.t * 0.55) * 1.45;
+    if (this.autoK) this.k = Math.sin(this.scanTime * 0.55) * 1.45;
+  };
+
+  AnalogyView.prototype.cubeVertices = function () {
+    return CUBE_V.map(rot3(this.cubeYaw, this.cubePitch, this.cubeRoll));
+  };
+  AnalogyView.prototype.tesseractVertices = function () {
+    var R = M4.compose([
+      M4.rotation('xw', this.t * 0.31),
+      M4.rotation('yz', this.t * 0.22),
+      M4.rotation('zw', this.t * 0.17)
+    ]);
+    return TES.verts.map(function (v) { return M4.mulVec(R, v); });
   };
 
   AnalogyView.prototype.draw = function () {
     var ctx = this.ctx, cv = this.canvas;
-    var W = cv.width, H = cv.height;
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    var W = cv.clientWidth || cv.width, H = cv.clientHeight || cv.height;
+    ctx.setTransform(cv.width / W, 0, 0, cv.height / H, 0, 0);
     ctx.fillStyle = '#0a0c14';
     ctx.fillRect(0, 0, W, H);
 
-    var cols = W > H * 1.1 ? 2 : 1;
+    var cols = W >= 700 ? 2 : 1;
     var rows = cols === 2 ? 2 : 4;
     var pw = W / cols, ph = H / rows;
     var panels = [
@@ -166,20 +174,26 @@
     }
   };
 
-  AnalogyView.prototype._label = function (ctx, x, y, title, sub) {
-    ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
+  AnalogyView.prototype._label = function (ctx, x, y, w, title, sub) {
+    ctx.font = '600 13px ui-sans-serif, system-ui, sans-serif';
     ctx.fillStyle = 'rgba(180,205,240,.92)';
     ctx.fillText(title, x + 12, y + 20);
     if (sub) {
-      ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
+      ctx.font = '12px ui-sans-serif, system-ui, sans-serif';
       ctx.fillStyle = 'rgba(150,170,200,.65)';
-      ctx.fillText(sub, x + 12, y + 36);
+      var line = '', row = y + 36;
+      Array.from(sub).forEach(function (ch) {
+        if (line && ctx.measureText(line + ch).width > w - 24) {
+          ctx.fillText(line, x + 12, row); line = ''; row += 16;
+        }
+        line += ch;
+      });
+      ctx.fillText(line, x + 12, row);
     }
   };
 
   /* A —— 我们的视角：立方体全貌 + 那张平面 */
   AnalogyView.prototype._panelCube3D = function (ctx, x, y, w, h) {
-    var R = rot3(this.cubeYaw, this.cubePitch, this.cubeRoll);
     var S = Math.min(w, h) * 0.22, ox = x + w / 2, oy = y + h / 2 + 10;
     var dist = 5.5;
     function pr(p) {
@@ -188,7 +202,7 @@
       var kk = dist / zc;
       return [ox + p[0] * kk * S, oy - p[1] * kk * S, zc];
     }
-    var V = CUBE_V.map(R), i;
+    var V = this.cubeVertices(), i;
     var P = V.map(pr);
 
     // 平面 y = k
@@ -221,14 +235,17 @@
       ctx.beginPath(); ctx.moveTo(s0[0], s0[1]); ctx.lineTo(s1[0], s1[1]); ctx.stroke();
     }
 
-    this._label(ctx, x, y, 'A · 三维观察者（我们）',
+    if (segs.dimension === 0) {
+      var point = pr(segs.points[0]);
+      ctx.fillStyle = '#ffd24a'; ctx.beginPath(); ctx.arc(point[0], point[1], 3, 0, Math.PI * 2); ctx.fill();
+    }
+    this._label(ctx, x, y, w, 'A · 三维观察者（我们）',
       '看得到立方体全貌，也看得到那张平面  y = ' + this.k.toFixed(2));
   };
 
   /* B —— 平面人的视角：他只有这个多边形 */
   AnalogyView.prototype._panelFlatlander = function (ctx, x, y, w, h) {
-    var R = rot3(this.cubeYaw, this.cubePitch, this.cubeRoll);
-    var V = CUBE_V.map(R);
+    var V = this.cubeVertices();
     var segs = sliceFaces(V, CUBE_F, 1, this.k);
     var S = Math.min(w, h) * 0.26, ox = x + w / 2, oy = y + h / 2 + 10;
 
@@ -252,20 +269,16 @@
       ctx.lineTo(ox + b[0] * S, oy - b[2] * S);
       ctx.stroke();
     }
-    var note = segs.length === 0
-      ? '什么都没有 —— 立方体整个在平面之外'
-      : segs.length + ' 条边的多边形，边数还会随立方体转动而变';
-    this._label(ctx, x, y, 'B · 二维观察者（平面人）', note);
+    if (segs.dimension === 0) {
+      var p = segs.points[0];
+      ctx.fillStyle = '#ffd24a'; ctx.beginPath(); ctx.arc(ox + p[0] * S, oy - p[2] * S, 3, 0, Math.PI * 2); ctx.fill();
+    }
+    this._label(ctx, x, y, w, 'B · 二维观察者（平面人）', sectionLabel(segs));
   };
 
   /* C —— 完全同一个操作，升一维：超立方体 ∩ 超平面 w = k */
   AnalogyView.prototype._panelTesseractSlice = function (ctx, x, y, w, h) {
-    var R = M4.compose([
-      M4.rotation('xw', this.t * 0.31),
-      M4.rotation('yz', this.t * 0.22),
-      M4.rotation('zw', this.t * 0.17)
-    ]);
-    var V = TES.verts.map(function (v) { return M4.mulVec(R, v); });
+    var V = this.tesseractVertices();
     var segs = sliceFaces(V, TES_F, 3, this.k);      // 按第 3 个坐标（w）切
 
     var S = Math.min(w, h) * 0.2, ox = x + w / 2, oy = y + h / 2 + 12, dist = 6;
@@ -284,27 +297,27 @@
       var a = pr(segs[i][0]), b = pr(segs[i][1]);
       ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
     }
-    this._label(ctx, x, y, 'C · 三维观察者看四维物体',
-      '超立方体 ∩ 超平面 w = ' + this.k.toFixed(2) + ' → 一个三维多面体（' + segs.length + ' 条棱）');
+    if (segs.dimension === 0) {
+      var point = pr(segs.points[0]);
+      ctx.fillStyle = '#7ad4ff'; ctx.beginPath(); ctx.arc(point[0], point[1], 3, 0, Math.PI * 2); ctx.fill();
+    }
+    this._label(ctx, x, y, w, 'C · 三维观察者看四维物体',
+      'w = ' + this.k.toFixed(2) + ' → ' + sectionLabel(segs));
   };
 
-  /* D —— 胶片：把 k 扫一遍，"整个四维物体"就是这一串三维形状 */
+  /* D —— 同一姿态的七层截面抽样 */
   AnalogyView.prototype._panelFilmstrip = function (ctx, x, y, w, h) {
-    var R = M4.compose([
-      M4.rotation('xw', this.t * 0.31),
-      M4.rotation('yz', this.t * 0.22),
-      M4.rotation('zw', this.t * 0.17)
-    ]);
-    var V = TES.verts.map(function (v) { return M4.mulVec(R, v); });
+    var V = this.tesseractVertices();
     var N = 7, i, n;
-    var cellW = (w - 24) / N, S = Math.min(cellW, h * 0.3) * 0.34;
+    var cols = w < 560 ? 3 : N, rows = Math.ceil(N / cols);
+    var cellW = (w - 24) / cols, cellH = (h - 65) / rows, S = Math.min(cellW, cellH) * 0.24;
     var yaw = 0.7, pitch = -0.3;
     var cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
 
     for (n = 0; n < N; n++) {
       var kk = -1.7 + 3.4 * n / (N - 1);
       var segs = sliceFaces(V, TES_F, 3, kk);
-      var ox = x + 12 + cellW * (n + 0.5), oy = y + h * 0.58;
+      var ox = x + 12 + cellW * (n % cols + 0.5), oy = y + 55 + cellH * (Math.floor(n / cols) + 0.45);
       var active = Math.abs(kk - this.k) < 3.4 / (N - 1) / 2;
       ctx.strokeStyle = active ? '#ffd24a' : 'rgba(122,212,255,.55)';
       ctx.lineWidth = active ? 1.8 : 1.1;
@@ -317,18 +330,23 @@
         });
         ctx.beginPath(); ctx.moveTo(out[0][0], out[0][1]); ctx.lineTo(out[1][0], out[1][1]); ctx.stroke();
       }
-      ctx.font = '10px ui-monospace, monospace';
+      if (segs.dimension === 0) {
+        var p = segs.points[0], x1 = p[0] * cy - p[2] * sy, z1 = p[0] * sy + p[2] * cy;
+        var y1 = p[1] * cp - z1 * sp;
+        ctx.fillStyle = '#7ad4ff'; ctx.beginPath(); ctx.arc(ox + x1 * S, oy - y1 * S, 2, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.font = '12px ui-monospace, monospace';
       ctx.fillStyle = active ? 'rgba(255,210,74,.9)' : 'rgba(150,170,200,.5)';
       ctx.textAlign = 'center';
-      ctx.fillText('w=' + kk.toFixed(1), ox, y + h - 16);
+      ctx.fillText('w=' + kk.toFixed(1), ox, y + 55 + cellH * (Math.floor(n / cols) + 1) - 5);
       ctx.textAlign = 'left';
     }
-    this._label(ctx, x, y, 'D · 一整个四维物体',
-      '它不是"一个形状"，而是这一串三维形状的全体');
+    this._label(ctx, x, y, w, 'D · 固定姿态的七层抽样',
+      '七张截面只是样本，不是连续截面的全体');
   };
 
   global.AnalogyView = AnalogyView;
-  /* 截面算法本身是通用的（任意维、任意"顶点+二维面"结构），单独暴露出来便于测试和复用 */
+  /* 适用于凸平面面片；保留相切点、去重后的棱和截面维数。 */
   AnalogyView.sliceFaces = sliceFaces;
   AnalogyView.CUBE = { verts: CUBE_V, edges: CUBE_E, faces: CUBE_F };
   AnalogyView.TESSERACT = { verts: TES.verts, edges: TES.edges, faces: TES_F };

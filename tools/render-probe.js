@@ -101,6 +101,7 @@
       for (var i = 0; i < tabs.length; i++) {
         var name = tabs[i].dataset.view;
         tabs[i].click();
+        if (name === 'slice') document.getElementById('slice-glome').click();
         var before = draws + ops;
         await wait(900);
         var cv = document.querySelector('#stage canvas.active') ||
@@ -112,6 +113,11 @@
         if (cv) {
           try { Object.assign(info, sample(cv)); }
           catch (e) { info.sampleError = String(e.message); }
+          if (name === 'slice') {
+            var pixel = new Uint8Array(4), gl = getCtx.call(cv, 'webgl');
+            gl.readPixels(Math.floor(cv.width / 2), Math.floor(cv.height / 2), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+            info.tutorialPixel = Array.from(pixel);
+          }
         }
         report.tabs[name] = info;
       }

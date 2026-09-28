@@ -268,6 +268,7 @@
         normal: hit.normal, normalImpulse: 0, tangentImpulse: [0, 0, 0, 0]
       };
       c.normalMass = Physics4.contactMass(c, c.normal);
+      c.restitution = restitution;
       c.target = -restitution * M4.dot(Physics4.contactVelocity(c), c.normal);
       return c;
     });
@@ -358,7 +359,8 @@
       });
     }
     var result = Physics4.solveContacts(contacts, world.friction, 2048);
-    if (result.change > 1e-9) throw new Error('Pair impulse solver did not converge: ' + result.change);
+    if (result.change > 1e-12) throw new Physics4.ContactConvergenceError(result.change);
+    world._solverResult = result;
     world._collisionContacts = world.restitution === 0 ? contacts : [];
     return result;
   }

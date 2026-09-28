@@ -309,12 +309,52 @@
     return true;
   }
 
+  function pointMap(body, r) {
+    var R = body.orientation, local = M4.mulVec(M4.transpose(R), r);
+    var J = new Array(24), response = new Array(24);
+    for (var axis = 0; axis < 4; axis++) {
+      PAIRS.forEach(function (pair, k) {
+        J[axis * 6 + k] = -R[axis * 4 + pair[0]] * local[pair[1]] +
+          R[axis * 4 + pair[1]] * local[pair[0]];
+      });
+    }
+    for (var k = 0; k < 6; k++) for (axis = 0; axis < 4; axis++) {
+      var sum = 0;
+      for (var j = 0; j < 6; j++) sum += body.invInertia[k * 6 + j] * J[axis * 6 + j];
+      response[k * 4 + axis] = sum;
+    }
+    return { body: body, orientation: R, J: J, response: response };
+  }
+
+  function mappedVelocity(map) {
+    var v = map.body.velocity.slice(), omega = map.body.angularVelocity;
+    for (var i = 0; i < 4; i++) for (var k = 0; k < 6; k++) v[i] += map.J[i * 6 + k] * omega[k];
+    return v;
+  }
+
   function contactVelocity(contact) {
+    var maps = contact._solverPoints;
+    if (maps && maps.every(function (m) { return m.orientation === m.body.orientation; })) {
+      var velocity = mappedVelocity(maps[0]);
+      return maps.length === 2 ? M4.sub(velocity, mappedVelocity(maps[1])) : velocity;
+    }
     var v = contact.body.pointVelocity(contact.r);
     return contact.other ? M4.sub(v, contact.other.pointVelocity(contact.rOther)) : v;
   }
 
   function contactImpulse(contact, impulse) {
+    if (contact._solverPoints) {
+      contact._solverPoints.forEach(function (map, index) {
+        var body = map.body, sign = index ? -1 : 1;
+        for (var i = 0; i < 4; i++) body.velocity[i] += sign * impulse[i] * body.invMass;
+        for (var k = 0; k < 6; k++) {
+          var dw = 0;
+          for (i = 0; i < 4; i++) dw += map.response[k * 4 + i] * impulse[i];
+          body.angularVelocity[k] += sign * dw;
+        }
+      });
+      return;
+    }
     contact.body.applyImpulse(impulse, contact.r);
     if (contact.other) contact.other.applyImpulse(M4.scale(impulse, -1), contact.rOther);
   }
@@ -324,11 +364,26 @@
       (contact.other ? effectiveMass(contact.other, contact.rOther, direction) : 0);
   }
 
-  // 地板仍使用原来的 32 轮、零目标速度；双体只扩展相对速度、两侧有效质量和作用反作用。
+  function ContactConvergenceError(residual) {
+    this.name = 'ContactConvergenceError';
+    this.message = 'Contact impulse solver did not converge: ' + residual;
+    this.residual = residual;
+    if (Error.captureStackTrace) Error.captureStackTrace(this, ContactConvergenceError);
+  }
+  ContactConvergenceError.prototype = Object.create(Error.prototype);
+  ContactConvergenceError.prototype.constructor = ContactConvergenceError;
+
   function solveContacts(contacts, friction, iterations) {
-    if (iterations === undefined) iterations = 32;
-    var impactChange = 0;
-    if (friction > 0 && contacts.some(function (c) { return c.other; })) {
+    var pairs = contacts.some(function (c) { return c.other; });
+    var strict = iterations !== undefined || pairs, budget = iterations === undefined ? (pairs ? 2048 : 32) : iterations;
+    var total = 0, continuations = 0, rounds = 0;
+    // Geometry stays fixed during a solve. Cache J and M^-1 J^T, not velocities,
+    // so continuation does not repeatedly rebuild world/body inertia transforms.
+    contacts.forEach(function (c) {
+      c._solverPoints = [pointMap(c.body, c.r)];
+      if (c.other) c._solverPoints.push(pointMap(c.other, c.rOther));
+    });
+    if (friction > 0 && strict) {
       contacts.forEach(function (c) {
         if (c.tangentMass !== undefined) return;
         var trace = 0;
@@ -341,19 +396,156 @@
         c.tangentMass = trace - c.normalMass;
       });
     }
-    if (friction > 0 && contacts.some(function (c) { return c.other && !c.impactSolved; })) {
-      // 先完成双体恢复，再解耗散摩擦/支撑；不能同时要求保持恢复产生的
-      // 角向分离速度与静摩擦的零滑动速度。冲击冲量保留为摩擦预算，不撤销反弹。
-      impactChange = solveContacts(contacts, 0, iterations).change;
+    function converge(mu) {
+      var result, previous = Infinity, count = 0, batch = budget;
+      do {
+        result = iterateContacts(contacts, mu, batch);
+        total += result.iterations;
+        count += result.iterations;
+        if (!strict || result.change <= 1e-12) return result;
+        // Continue only while the fixed-point residual contracts. A stalled or
+        // exhausted solve is retried from a rolled-back, smaller world step.
+        if (result.change >= previous * 0.9 || count >= 32768) {
+          throw new ContactConvergenceError(result.change);
+        }
+        previous = result.change;
+        batch = Math.min(batch * 2, 32768 - count);
+        continuations++;
+      } while (true);
+    }
+    if (contacts.some(function (c) { return c.other && !c.impactSolved; })) {
+      // A simultaneous Newton impact can turn a separating point into a closing
+      // one. Propagate further impacts, not a dissipative zero-target clamp.
+      // For uniform e each converged round has
+      // dT = -(1-e)/(2(1+e)) * lambda^T K lambda, hence dT=0 at e=1.
+      do {
+        converge(0);
+        var closing = contacts.some(function (c) {
+          return M4.dot(contactVelocity(c), c.normal || NORMAL) < -1e-10;
+        });
+        contacts.forEach(function (c) {
+          c.impactImpulse = (c.impactImpulse || 0) + c.normalImpulse;
+          c.normalImpulse = 0;
+          c.target = -(c.restitution || 0) * M4.dot(contactVelocity(c), c.normal || NORMAL);
+        });
+        rounds++;
+        if (closing && rounds >= 64) throw new ContactConvergenceError('impact propagation');
+      } while (closing);
       contacts.forEach(function (c) {
-        c.impactImpulse = c.normalImpulse;
-        c.normalImpulse = 0;
         c.target = 0;
         c.impactSolved = true;
       });
     }
+    var result = converge(friction);
+    return { iterations: total, change: result.change, continuations: continuations, impactRounds: rounds };
+  }
+
+  function tangentUpdate(contact, friction, nextNormal) {
+    var normal = contact.normal || NORMAL, vt = contactVelocity(contact);
+    vt = M4.sub(vt, M4.scale(normal, M4.dot(vt, normal)));
+    var speed = M4.len(vt), next = contact.tangentImpulse.slice();
+    if (speed > 0 && friction > 0) {
+      var mass = contact.tangentMass || contactMass(contact, M4.scale(vt, 1 / speed));
+      next = M4.sub(next, M4.scale(vt, 1 / mass));
+    }
+    var magnitude = M4.len(next), limit = friction * (nextNormal + (contact.impactImpulse || 0));
+    return magnitude > limit ? M4.scale(next, limit / magnitude) : next;
+  }
+
+  function contactResidual(contacts, friction) {
+    var residual = 0;
+    contacts.forEach(function (c) {
+      var vn = M4.dot(contactVelocity(c), c.normal || NORMAL), target = c.target || 0;
+      var next = Math.max(0, c.normalImpulse + (target - vn) / c.normalMass);
+      residual = Math.max(residual, Math.abs(next - c.normalImpulse),
+        Math.max(0, target - vn), M4.len(M4.sub(tangentUpdate(c, friction, next), c.tangentImpulse)));
+    });
+    return residual;
+  }
+
+  function impulseVector(contacts) {
+    var out = [];
+    contacts.forEach(function (c) { out.push(c.normalImpulse); out.push.apply(out, c.tangentImpulse); });
+    return out;
+  }
+
+  function setImpulses(contacts, values, friction) {
+    contacts.forEach(function (c, i) {
+      var normal = c.normal || NORMAL, jn = Math.max(0, values[5 * i]);
+      var jt = values.slice(5 * i + 1, 5 * i + 5);
+      jt = M4.sub(jt, M4.scale(normal, M4.dot(jt, normal)));
+      var length = M4.len(jt), limit = friction * (jn + (c.impactImpulse || 0));
+      if (length > limit) jt = M4.scale(jt, limit / length);
+      contactImpulse(c, M4.add(M4.scale(normal, jn - c.normalImpulse), M4.sub(jt, c.tangentImpulse)));
+      c.normalImpulse = jn; c.tangentImpulse = jt;
+    });
+  }
+
+  function accelerateContacts(contacts, friction, history) {
+    var latest = history[history.length - 1], differences = [];
+    for (var i = 1; i < history.length; i++) {
+      differences.push({
+        r: history[i].r.map(function (x, j) { return x - history[i - 1].r[j]; }),
+        f: history[i].f.map(function (x, j) { return x - history[i - 1].f[j]; })
+      });
+    }
+    function dot(a, b) { return a.reduce(function (s, x, j) { return s + x * b[j]; }, 0); }
+    var size = differences.length, matrix = [], rhs = [], scale = 0;
+    for (i = 0; i < size; i++) {
+      matrix[i] = differences.map(function (d) { return dot(differences[i].r, d.r); });
+      rhs[i] = dot(differences[i].r, latest.r);
+      scale = Math.max(scale, matrix[i][i]);
+    }
+    if (scale === 0) return;
+    // Small regularized least-squares problem for Anderson mixing. Redundant
+    // contact impulses need not be unique; regularization only chooses a trial
+    // direction and never changes the physical residual or acceptance tolerance.
+    for (i = 0; i < size; i++) matrix[i][i] += scale * 1e-12;
+    for (i = 0; i < size; i++) {
+      var pivot = i;
+      for (var j = i + 1; j < size; j++) if (Math.abs(matrix[j][i]) > Math.abs(matrix[pivot][i])) pivot = j;
+      var row = matrix[i]; matrix[i] = matrix[pivot]; matrix[pivot] = row;
+      var value = rhs[i]; rhs[i] = rhs[pivot]; rhs[pivot] = value;
+      if (Math.abs(matrix[i][i]) < scale * 1e-15) return;
+      for (j = i + 1; j < size; j++) {
+        var ratio = matrix[j][i] / matrix[i][i];
+        for (var k = i; k < size; k++) matrix[j][k] -= ratio * matrix[i][k];
+        rhs[j] -= ratio * rhs[i];
+      }
+    }
+    var weights = new Array(size);
+    for (i = size - 1; i >= 0; i--) {
+      value = rhs[i];
+      for (j = i + 1; j < size; j++) value -= matrix[i][j] * weights[j];
+      weights[i] = value / matrix[i][i];
+    }
+    var candidate = latest.f.map(function (x, k) {
+      differences.forEach(function (d, j) { x -= weights[j] * d.f[k]; });
+      return x;
+    });
+    if (!candidate.every(Number.isFinite)) return;
+    var before = contactResidual(contacts, friction), saved = new Map();
+    contacts.forEach(function (c) {
+      c._solverPoints.forEach(function (m) {
+        if (!saved.has(m.body)) saved.set(m.body, [m.body.velocity.slice(), m.body.angularVelocity.slice()]);
+      });
+    });
+    setImpulses(contacts, candidate, friction);
+    if (contactResidual(contacts, friction) < before * 0.9) {
+      history.length = 0;
+    } else {
+      contacts.forEach(function (c, i) {
+        c.normalImpulse = latest.f[5 * i];
+        c.tangentImpulse = latest.f.slice(5 * i + 1, 5 * i + 5);
+      });
+      saved.forEach(function (state, body) { body.velocity = state[0]; body.angularVelocity = state[1]; });
+    }
+  }
+
+  function iterateContacts(contacts, friction, iterations) {
+    var residual = 0, history = [];
     for (var pass = 0; pass < iterations; pass++) {
-      var change = 0;
+      var change = 0, previous = friction > 0 && iterations > 32 ? impulseVector(contacts) : null;
       for (var i = 0; i < contacts.length; i++) {
         var contact = contacts[i], normal = contact.normal || NORMAL;
         var vn = M4.dot(contactVelocity(contact), normal);
@@ -362,24 +554,25 @@
         var deltaNormal = nextNormal - contact.normalImpulse;
         contactImpulse(contact, M4.scale(normal, deltaNormal));
         contact.normalImpulse = nextNormal;
-        var vt = contactVelocity(contact);
-        vt = M4.sub(vt, M4.scale(normal, M4.dot(vt, normal)));
-        var speed = M4.len(vt), nextTangent = contact.tangentImpulse.slice();
-        if (speed > 1e-10 && friction > 0) {
-          var tangent = M4.scale(vt, 1 / speed);
-          nextTangent = M4.sub(nextTangent, M4.scale(tangent,
-            speed / (contact.tangentMass || contactMass(contact, tangent))));
-        }
-        var magnitude = M4.len(nextTangent), limit = friction * (nextNormal + (contact.impactImpulse || 0));
-        if (magnitude > limit) nextTangent = M4.scale(nextTangent, limit / magnitude);
+        var nextTangent = tangentUpdate(contact, friction, nextNormal);
         var deltaTangent = M4.sub(nextTangent, contact.tangentImpulse);
         contactImpulse(contact, deltaTangent);
         contact.tangentImpulse = nextTangent;
         change = Math.max(change, Math.abs(deltaNormal), M4.len(deltaTangent));
       }
-      if (change < 1e-12) break;
+      if (previous) {
+        var current = impulseVector(contacts);
+        history.push({ f: current, r: current.map(function (x, i) { return x - previous[i]; }) });
+        if (history.length > 7) history.shift();
+        if (history.length >= 3 && pass % 8 === 7) accelerateContacts(contacts, friction, history);
+      }
+      if (change < 1e-12) {
+        residual = contactResidual(contacts, friction);
+        if (residual <= 1e-12) break;
+      }
     }
-    return { iterations: Math.min(pass + 1, iterations), change: Math.max(change, impactChange) };
+    residual = contactResidual(contacts, friction);
+    return { iterations: Math.min(pass + 1, iterations), change: residual };
   }
 
   function World4(options) {
@@ -392,7 +585,7 @@
     this.floorEnabled = o.floor !== false;
   }
 
-  World4.prototype.step = function (dt) {
+  function integrateWorld(dt) {
     for (var i = 0; i < this.bodies.length; i++) {
       var body = this.bodies[i];
       if (!this.floorEnabled) {
@@ -434,6 +627,46 @@
       collideFloor(body, this);
     }
     if (global.Collide4 && this.bodies.length > 1) global.Collide4.solveWorld(this);
+  }
+
+  function snapshot(body) {
+    var saved = {};
+    ['position', 'velocity', 'orientation', 'angularVelocity', 'force', 'torque'].forEach(function (key) {
+      saved[key] = body[key].slice();
+    });
+    return saved;
+  }
+
+  function advanceWorld(world, dt, depth) {
+    var saved = world.bodies.map(snapshot), contacts = world._collisionContacts, result = world._solverResult;
+    try {
+      integrateWorld.call(world, dt);
+    } catch (error) {
+      world.bodies.forEach(function (body, i) { restoreBody(body, saved[i]); });
+      world._collisionContacts = contacts;
+      world._solverResult = result;
+      if (!(error instanceof ContactConvergenceError) || depth >= 8) throw error;
+      world._solverSubdivisions++;
+      try {
+        advanceWorld(world, dt / 2, depth + 1);
+        world.bodies.forEach(function (body, i) {
+          body.force = saved[i].force.slice();
+          body.torque = saved[i].torque.slice();
+        });
+        advanceWorld(world, dt / 2, depth + 1);
+      } catch (retryError) {
+        world.bodies.forEach(function (body, i) { restoreBody(body, saved[i]); });
+        world._collisionContacts = contacts;
+        world._solverResult = result;
+        throw retryError;
+      }
+    }
+  }
+
+  World4.prototype.step = function (dt) {
+    if (!Number.isFinite(dt) || dt < 0) throw new Error('时间步长必须为有限非负数');
+    this._solverSubdivisions = 0;
+    advanceWorld(this, dt, 0);
   };
 
   function restoreBody(body, saved) {
@@ -447,6 +680,7 @@
     inertiaBox4: inertiaBox4, inertiaGlome: inertiaGlome,
     effectiveMass: effectiveMass, floorContacts: floorContacts, collideFloor: collideFloor,
     contactVelocity: contactVelocity, contactMass: contactMass, solveContacts: solveContacts,
+    ContactConvergenceError: ContactConvergenceError,
     RigidBody4: RigidBody4, World4: World4
   };
   global.RigidBody4 = RigidBody4;

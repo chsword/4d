@@ -23,10 +23,30 @@
     el.style.display = 'block';
   }
 
+  function showViewError() {
+    var v = views[current], el = document.getElementById('fatal');
+    el.style.display = v && v.error ? 'block' : 'none';
+    var recovery = ['physics', 'slice', 'linked'].indexOf(current) >= 0
+      ? '；请使用本页复位按钮重试；初始化失败需刷新页面。' : '；请刷新页面重试。';
+    el.textContent = v && v.error ? '视图运行失败：' + v.error + recovery : '';
+  }
+  function resetView(v, reset) {
+    try {
+      reset();
+      v.error = null;
+    } catch (err) {
+      v.error = err.message;
+      console.error(err);
+    }
+    showViewError();
+  }
+
   try {
     views.projection = new ProjectionView(canvases.projection);
     views.analogy = new AnalogyView(canvases.analogy);
   } catch (err) {
+    if (!views.projection) views.projection = { error: '初始化失败：' + err.message };
+    if (!views.analogy) views.analogy = { error: '初始化失败：' + err.message };
     fatal('初始化失败：' + err.message);
     console.error(err);
   }
@@ -71,6 +91,10 @@
   function resize() {
     stage.style.minHeight = '';
     var r = stage.getBoundingClientRect();
+    if (current === 'analogy') {
+      stage.style.minHeight = r.width < 700 ? '1200px' : '600px';
+      r = stage.getBoundingClientRect();
+    }
     // 用实际画布宽度决定纵排高度，避免滚动条让 CSS 断点与画面断点错位。
     if (current === 'chirality' && r.width < 680) {
       stage.style.minHeight = '1240px';
@@ -120,6 +144,7 @@
     stage.classList.toggle('chirality', name === 'chirality');
     stage.classList.toggle('rings', name === 'rings');
     resize();
+    showViewError();
   }
   Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (t) {
     t.addEventListener('click', function () { select(t.dataset.view); });
@@ -127,7 +152,7 @@
 
   /* ---------- 投影视图控件 ---------- */
   var pv = views.projection;
-  if (pv) {
+  if (pv && !pv.error) {
     document.getElementById('shape').addEventListener('change', function () {
       pv.setShape(this.value);
       document.getElementById('projmode').value = pv.mode;
@@ -160,13 +185,10 @@
       });
     });
     document.getElementById('proj-iso').addEventListener('click', function () {
-      // 等倾旋转（isoclinic）：两个互相垂直的平面以同一速率转动。
-      // 四维独有的现象，看上去像整个形状在"自己里面翻出来"。
-      var v = { xy: 0.4, zw: 0.4, xz: 0, yz: 0, xw: 0, yw: 0 };
+      pv.startIsoclinic();
       M4.PLANES.forEach(function (p) {
-        pv.speeds[p] = v[p];
-        document.getElementById('sp-' + p).value = v[p];
-        document.getElementById('spv-' + p).textContent = v[p].toFixed(2);
+        document.getElementById('sp-' + p).value = pv.speeds[p];
+        document.getElementById('spv-' + p).textContent = pv.speeds[p].toFixed(2);
       });
     });
   }
@@ -205,7 +227,14 @@
       sv.xray = this.checked;
     });
     document.getElementById('slice-reset').addEventListener('click', function () {
-      sv.cam = [0, 0.4, 0, 0]; sv.yaw = 0; sv.pitch = 0; sv.resetW();
+      resetView(sv, function () { sv.resetCamera(); });
+      this.blur();
+    });
+    document.getElementById('slice-glome').addEventListener('click', function () {
+      resetView(sv, function () { sv.startGlomeExperiment(); });
+      document.getElementById('wtint').checked = sv.wTint;
+      document.getElementById('xray').checked = sv.xray;
+      this.blur();
     });
     document.getElementById('wslider').addEventListener('input', function () {
       sv.setW(parseFloat(this.value));
@@ -222,7 +251,7 @@
     });
     document.getElementById('linked-object').addEventListener('change', function () { lv.selected = this.value; });
     document.getElementById('linked-reset').addEventListener('click', function () {
-      lv.reset();
+      resetView(lv, function () { lv.reset(); });
       document.getElementById('linked-answer').textContent = '已回到墙前；先预测下一层，再揭示。';
     });
     function predict(exists) {
@@ -275,7 +304,9 @@
     });
     document.getElementById('physics-pause').addEventListener('change', function () { ph.paused = this.checked; });
     document.getElementById('physics-spawn').addEventListener('click', function () { ph.spawn(); });
-    document.getElementById('physics-reset').addEventListener('click', function () { ph.resetScene(); });
+    document.getElementById('physics-reset').addEventListener('click', function () {
+      resetView(ph, function () { ph.resetScene(); });
+    });
     document.getElementById('physics-camera').addEventListener('click', function () { ph.resetCamera(); });
     document.getElementById('physics-w').addEventListener('input', function () { ph.cam[3] = parseFloat(this.value); });
     document.getElementById('physics-wtint').addEventListener('change', function () { ph.wTint = this.checked; });
@@ -407,7 +438,7 @@
 
   /* ---------- 类比视图控件 ---------- */
   var av = views.analogy;
-  if (av) {
+  if (av && !av.error) {
     document.getElementById('kslider').addEventListener('input', function () {
       av.k = parseFloat(this.value);
       av.autoK = false;
@@ -428,13 +459,16 @@
     var dt = Math.min(0.05, (now - last) / 1000);
     last = now;
     var v = views[current];
+    showViewError();
     if (v && !v.error) {
       try {
         if (v.step) v.step(dt);
         v.draw();
       } catch (err) {
         v.error = err.message;
-        fatal('视图运行失败：' + err.message);
+        if (v.clearInput) v.clearInput();
+        else if (v.keys) v.keys = {};
+        showViewError();
         console.error(err);
       }
     }

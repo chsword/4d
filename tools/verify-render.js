@@ -18,7 +18,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawn } = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
 const REQUIRE_BROWSER = process.argv.includes('--require-browser');
@@ -106,9 +106,116 @@ for (const [name, v] of Object.entries(report.tabs)) {
   // 纯色画面标准差为 0；给一个宽松但能抓住黑屏的下限
   else if (v.std < 3) fails.push(`${name}: 画面近乎纯色（标准差 ${v.std}），疑似黑屏`);
   else if (v.colors < 20) fails.push(`${name}: 颜色数仅 ${v.colors}，疑似未正常渲染`);
+  if (name === 'slice' && (!v.tutorialPixel || v.tutorialPixel[0] < v.tutorialPixel[1] * 1.3 ||
+      v.tutorialPixel[0] < v.tutorialPixel[2] * 1.3)) fails.push('红球教程准星处没有真正渲染出红球');
 }
 
 console.log();
 if (fails.length) { fails.forEach((f) => console.error('FAIL ' + f)); process.exit(1); }
-console.log(`PASS ${report.tabCount} 个页签全部真机渲染通过：` +
-  '着色器零失败、零运行时错误、画布均有实际内容。');
+async function verifyLayouts() {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), '4d-layout-'));
+  const proc = spawn(browser, [
+    '--headless=new', '--no-sandbox', '--disable-dev-shm-usage',
+    '--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader',
+    '--remote-debugging-port=0', '--user-data-dir=' + profile, 'about:blank'
+  ], { stdio: ['ignore', 'ignore', 'pipe'] });
+  const exited = new Promise((resolve) => proc.once('exit', resolve));
+  let socket;
+  try {
+    const address = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Chromium DevTools startup timeout')), 30000);
+      let text = '';
+      proc.once('error', (error) => { clearTimeout(timer); reject(error); });
+      proc.stderr.on('data', (chunk) => {
+        text += chunk;
+        const match = text.match(/DevTools listening on (ws:\/\/[^\s]+)/);
+        if (match) { clearTimeout(timer); resolve(match[1]); }
+      });
+    });
+    socket = new WebSocket(address);
+    await new Promise((resolve, reject) => {
+      socket.addEventListener('open', resolve, { once: true });
+      socket.addEventListener('error', reject, { once: true });
+    });
+    let sequence = 0;
+    const pending = new Map(), events = new Map();
+    socket.addEventListener('message', (event) => {
+      const message = JSON.parse(event.data);
+      if (message.id && pending.has(message.id)) {
+        const p = pending.get(message.id); pending.delete(message.id); clearTimeout(p.timer);
+        if (message.error) p.reject(new Error(JSON.stringify(message.error))); else p.resolve(message.result);
+      } else if (events.has(message.method)) {
+        events.get(message.method)(message.params); events.delete(message.method);
+      }
+    });
+    function send(method, params, sessionId) {
+      return new Promise((resolve, reject) => {
+        const id = ++sequence;
+        const timer = setTimeout(() => { pending.delete(id); reject(new Error(method + ' timeout')); }, 30000);
+        pending.set(id, { resolve, reject, timer });
+        socket.send(JSON.stringify({ id, method, params: params || {}, sessionId }));
+      });
+    }
+    const target = await send('Target.createTarget', { url: 'about:blank' });
+    const { sessionId } = await send('Target.attachToTarget', { targetId: target.targetId, flatten: true });
+    await send('Page.enable', {}, sessionId);
+    await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
+      window.layoutProbe = {};
+      const proto = CanvasRenderingContext2D.prototype;
+      for (const name of ['fillText', 'rect']) {
+        const original = proto[name];
+        proto[name] = function(...args) {
+          const cv = this.canvas, id = cv.id;
+          if (id === 'cv-analogy' || id === 'cv-projection') {
+            const r = cv.getBoundingClientRect(), t = this.getTransform();
+            const record = layoutProbe[id] || (layoutProbe[id] = { fonts: [], panels: [] });
+            if (name === 'fillText') record.fonts.push(parseFloat(this.font.match(/([\\d.]+)px/)[1]) * t.d * r.height / cv.height);
+            else record.panels.push([args[2] * t.a * r.width / cv.width, args[3] * t.d * r.height / cv.height]);
+          }
+          return original.apply(this, args);
+        };
+      }
+    })();` }, sessionId);
+    for (const [width, height, dpr] of [[320, 844, 1], [320, 844, 3], [390, 844, 3], [1280, 800, 2]]) {
+      await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: dpr, mobile: width < 700 }, sessionId);
+      const loaded = new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('Layout page load timeout')), 30000);
+        events.set('Page.loadEventFired', () => { clearTimeout(timer); resolve(); });
+      });
+      await send('Page.navigate', { url: 'file://' + path.join(ROOT, 'index.html') }, sessionId);
+      await loaded;
+      const result = await send('Runtime.evaluate', { awaitPromise: true, returnByValue: true, expression: `(async () => {
+        const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        await frame();
+        const a = document.getElementById('cv-analogy');
+        const r = a.getBoundingClientRect();
+        const analogy = { width: r.width, height: r.height, bufferWidth: a.width,
+          touch: getComputedStyle(a).touchAction, ...layoutProbe[a.id] };
+        document.querySelector('.tab[data-view="projection"]').click();
+        await frame();
+        return { analogy, projection: layoutProbe['cv-projection'], viewport: innerWidth,
+          overflow: document.documentElement.scrollWidth > innerWidth };
+      })()` }, sessionId);
+      if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
+      const value = result.result.value, a = value.analogy, p = value.projection;
+      if (value.viewport !== width || value.overflow) throw new Error('Wrong/overflowing viewport: ' + JSON.stringify(value));
+      if (!a.fonts.length || !p.fonts.length || Math.min(...a.fonts, ...p.fonts) < 12 - 1e-9) {
+        throw new Error('Unreadable CSS text at ' + width + '/DPR' + dpr);
+      }
+      if (!a.panels.length || a.panels.some(([w, h]) => w < 298 || h < 298) || a.touch !== 'pan-y') {
+        throw new Error('Insufficient panel space or disabled touch scrolling: ' + JSON.stringify(a));
+      }
+      console.log(`PASS 布局 ${width}×${height} DPR=${dpr}: 最小字号 ${Math.min(...a.fonts, ...p.fonts).toFixed(2)} CSS px，单格至少 300×300 CSS px`);
+    }
+  } finally {
+    if (socket) socket.close();
+    if (proc.exitCode === null) proc.kill('SIGTERM');
+    await exited;
+    fs.rmSync(profile, { recursive: true, force: true });
+  }
+}
+
+verifyLayouts().then(() => {
+  console.log(`PASS ${report.tabCount} 个页签全部真机渲染通过：` +
+    '着色器零失败、零运行时错误、红球实际可见、高 DPR / 小屏布局可读。');
+}).catch((error) => { console.error('FAIL ' + error.stack); process.exitCode = 1; });

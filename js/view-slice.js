@@ -233,6 +233,23 @@
     this._bind();
   }
 
+  SliceView.prototype.resetCamera = function () {
+    this.cam = [0, 0.4, 0, 0];
+    this.yaw = 0; this.pitch = 0;
+    this.a_xw = 0; this.a_zw = 0;
+    this.keys = {};
+  };
+
+  SliceView.prototype.startGlomeExperiment = function () {
+    var ball = this.scene.objects.find(function (o) { return o.id === 'glome'; });
+    if (!ball || ball.type !== 'sphere') throw new Error('Red glome is missing from the tutorial scene');
+    var position = M4.add(ball.center, [0, 0, 6.5, 0]);
+    if (this.scene.sdf(position) < this.cameraRadius) throw new Error('Unsafe glome camera preset');
+    this.resetCamera();
+    this.cam = position;
+    this.wTint = false; this.xray = false;
+  };
+
   SliceView.prototype._bind = function () {
     var self = this, cv = this.canvas;
     cv.addEventListener('click', function () {

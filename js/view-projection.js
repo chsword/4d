@@ -3,8 +3,8 @@
  * 流水线：4D 顶点 --(M4 旋转)--> 4D --(透视/正交/立体投影)--> 3D
  *         --(可拖动的 3D 相机)--> 2D 画布
  *
- * 两级投影是不可回避的：屏幕是 2D，所以 4→2 必须降两次维。
- * 好处是能一眼看到整个形状的拓扑；代价是尺寸和角度全被扭曲
+ * 本项目选择两级投影（也可直接 4→2）。
+ * 好处是能看到全体顶点与棱的像；代价是重影、尺寸和角度失真
  * （超立方体的 8 个胞全是全等的正方体，图上却大小悬殊）。
  */
 (function (global) {
@@ -18,6 +18,7 @@
     this.eye = 2.6;                 // 第四维上的视距
     this.speeds = { xy: 0, xz: 0, yz: 0, xw: 0.25, yw: 0, zw: 0.15 };
     this.angles = { xy: 0, xz: 0, yz: 0, xw: 0, yw: 0, zw: 0 };
+    this.baseRotor = M4.ident();
     this.camYaw = 0.6;
     this.camPitch = -0.25;
     this.camDist = 6.5;
@@ -59,6 +60,12 @@
     }
   };
 
+  ProjectionView.prototype.startIsoclinic = function () {
+    this.baseRotor = this.rotor();
+    this.angles = { xy: 0, xz: 0, yz: 0, xw: 0, yw: 0, zw: 0 };
+    this.speeds = { xy: 0.4, xz: 0, yz: 0, xw: 0, yw: 0, zw: 0.4 };
+  };
+
   /* 6 个旋转平面按固定顺序合成一个 4x4。
      顺序有意义（4D 旋转不交换），这里的选择只求视觉上连续。 */
   ProjectionView.prototype.rotor = function () {
@@ -66,13 +73,13 @@
     for (var i = 0; i < order.length; i++) {
       mats.push(M4.rotation(order[i], this.angles[order[i]]));
     }
-    return M4.compose(mats);
+    return M4.mul(M4.compose(mats), this.baseRotor);
   };
 
   ProjectionView.prototype.draw = function () {
     var ctx = this.ctx, cv = this.canvas;
-    var W = cv.width, H = cv.height, S = Math.min(W, H) * 0.42;
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    var W = cv.clientWidth || cv.width, H = cv.clientHeight || cv.height, S = Math.min(W, H) * 0.42;
+    ctx.setTransform(cv.width / W, 0, 0, cv.height / H, 0, 0);
     ctx.fillStyle = '#0a0c14';
     ctx.fillRect(0, 0, W, H);
 
@@ -168,7 +175,7 @@
       ctx.fillRect(x + i, y, 1, bh);
     }
     ctx.fillStyle = 'rgba(200,215,235,.75)';
-    ctx.font = '11px ui-monospace, monospace';
+    ctx.font = '12px ui-monospace, monospace';
     ctx.fillText('w = ' + wMin.toFixed(2), x, y - 5);
     ctx.fillText(wMax.toFixed(2), x + bw - 26, y - 5);
     ctx.fillText(this.shape.name + '  ·  ' + this.shape.verts.length + ' 顶点 / ' +

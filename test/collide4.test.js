@@ -45,6 +45,11 @@ function moved(body, displacement) {
 }
 function norm(v) { return Math.sqrt(v.reduce(function (s, x) { return s + x * x; }, 0)); }
 function energy(bodies) { return bodies.reduce(function (s, b) { return s + b.kineticEnergy(); }, 0); }
+function normalVelocity(c) {
+  var v = c.body.pointVelocity(c.r);
+  if (c.other) v = M4.sub(v, c.other.pointVelocity(c.rOther));
+  return M4.dot(v, c.normal || [0, 1, 0, 0]);
+}
 function momentum(bodies) {
   var linear = [0, 0, 0, 0], angular = [0, 0, 0, 0, 0, 0];
   bodies.forEach(function (body) {
@@ -67,8 +72,37 @@ function solvePair(a, b, restitution, friction) {
   var contacts = C.pairContacts(a, b, hit, restitution);
   var result = P.solveContacts(contacts, friction, 1024);
   assert(result.change < 1e-11, 'contact solver convergence: ' + result.change);
+  contacts.forEach(function (c) {
+    assert(normalVelocity(c) >= -1e-10, 'post-impact contact is still closing');
+  });
   return contacts;
 }
+
+test('F17 coplanar elastic impacts propagate until ALL points separate, continuously at zero friction', function () {
+  [0, 1e-20, 0.3].forEach(function (mu) {
+    var a = new RigidBody4({ angularVelocity: [1, 0, 0, -1, -1, 0] });
+    var b = new RigidBody4({ position: [0, 1.2, 0, 0] });
+    var hit = C.collide(a, b), before = energy([a, b]), initial = momentum([a, b]);
+    near(hit.depth, 0, 0, 'initially touching, not penetrating');
+    var contacts = C.pairContacts(a, b, hit, 1);
+    var result = P.solveContacts(contacts, mu);
+    assert(result.impactRounds >= 2, 'coupled impact needs propagation');
+    function vy(body, p) {
+      var r = p.map(function (x, i) { return x - body.position[i]; }), w = body.angularVelocity;
+      return body.velocity[1] + w[0] * r[0] - w[3] * r[2] - w[4] * r[3];
+    }
+    hit.points.forEach(function (p) {
+      assert(vy(b, p) - vy(a, p) >= -1e-12, 'independent normal response at ' + p);
+    });
+    if (mu < 1e-10) near(energy([a, b]), before, 2e-12, 'elastic energy and continuity at mu=0');
+    else assert(energy([a, b]) <= before + 2e-12, 'friction dissipates');
+    vectorNear(momentum([a, b]).linear, initial.linear, 2e-12, 'linear momentum');
+    vectorNear(momentum([a, b]).angular, initial.angular, 2e-12, 'angular momentum');
+    a.step(1e-6, 0); b.step(1e-6, 0);
+    var next = C.sat(a, b);
+    assert(!next || next.depth <= 1e-12, 'next infinitesimal step must not penetrate');
+  });
+});
 
 test('support maps, cross4 orthogonality and all 56 candidate axes', function () {
   for (var i = 0; i < 100; i++) {
@@ -496,6 +530,41 @@ test('four-box stack settles for 8 seconds with coupled floor contacts, no sinki
     ', angular speed=' + maxOmega.toExponential(3) + ', depth=' + maxDepth.toExponential(3));
 });
 
+test('F16 rollback/subdivision preserves external impulses and retries instead of accepting failure', function () {
+    var world = new P.World4({ gravity: 0, floor: false, restitution: 0 });
+    var a = new RigidBody4({ mass: 2, position: [0, 0, 0, 0] });
+    world.bodies = [a, new RigidBody4({ position: [100, 0, 0, 0] })];
+    var force = [1, 2, 3, 4], torque = [0.1, -0.2, 0.3, -0.4, 0.5, -0.6], dt = 0.04;
+    a.applyForce(force); a.applyTorque(torque);
+    var solve = C.solveWorld, calls = 0;
+    C.solveWorld = function (w) {
+      calls++;
+      if (calls === 1) {
+        a.velocity[0] = 12345;
+        throw new P.ContactConvergenceError(0.01);
+      }
+      return solve(w);
+    };
+    try { world.step(dt); } finally { C.solveWorld = solve; }
+    assert(calls === 3 && world._solverSubdivisions === 1, 'one failed full step plus two successful halves');
+    vectorNear(a.velocity, force.map(function (f) { return f * dt / 2; }), 2e-14, 'external force exactly once');
+    vectorNear(a.position, force.map(function (f) { return 0.75 * f * dt * dt / 2; }), 2e-14, 'retried half-step trajectory');
+    vectorNear(a.worldAngularMomentum(), torque.map(function (t) { return t * dt; }), 2e-13, 'external torque exactly once');
+    vectorNear(a.force, [0, 0, 0, 0], 0, 'force consumed only on success');
+  });
+
+  test('F16 exhausted retries roll back every body and still throw explicitly', function () {
+    var world = new P.World4({ gravity: 0, floor: false });
+    world.bodies = [new RigidBody4(), new RigidBody4({ position: [10, 0, 0, 0] })];
+    world.bodies[0].applyForce([1, 2, 3, 4]);
+    var before = JSON.stringify(world.bodies), solve = C.solveWorld, error;
+    C.solveWorld = function () { throw new P.ContactConvergenceError(0.01); };
+    try { world.step(0.04); } catch (e) { error = e; } finally { C.solveWorld = solve; }
+    assert(error instanceof P.ContactConvergenceError && error.residual === 0.01, 'failure is not success-shaped');
+    assert(world._solverSubdivisions === 8, 'bounded retry tree');
+    assert(JSON.stringify(world.bodies) === before, 'complete transactional rollback including forces');
+  });
+
 test('six-body demo, classic script order and rendering uniforms/SDF are wired without shader regressions', function () {
   require('../js/scene4.js');
   require('../js/view-slice.js');
@@ -551,6 +620,43 @@ test('six-body demo, classic script order and rendering uniforms/SDF are wired w
   } finally {
     global.document = oldDocument;
   }
+});
+
+require('../js/scene4.js');
+require('../js/view-slice.js');
+require('../js/view-physics.js');
+[0, 0.2, 0.45, 0.8, 1].forEach(function (e) {
+  [0, 0.3, 0.6, 1].forEach(function (mu) {
+    [240, 125, 60].forEach(function (hz) {
+      test('F16 default six bodies 10 seconds e=' + e + ' mu=' + mu + ' dt=1/' + hz, function () {
+        var view = { maxBodies: 8, world: new P.World4({ restitution: e, friction: mu }) };
+        PhysicsView.prototype.resetScene.call(view);
+        var solve = P.solveContacts, continuations = 0, subdivisions = 0;
+        P.solveContacts = function (contacts, friction, iterations) {
+          var result = solve(contacts, friction, iterations);
+          assert(result.change <= 1e-12, 'strict fixed-point residual');
+          contacts.forEach(function (c) {
+            assert(normalVelocity(c) >= -1e-10,
+              'default world post-impact normal velocity');
+          });
+          continuations += result.continuations;
+          return result;
+        };
+        try {
+          for (var step = 0; step < 10 * hz; step++) {
+            view.world.step(1 / hz);
+            subdivisions += view.world._solverSubdivisions;
+            view.world.bodies.forEach(function (b) {
+              assert(b.position.concat(b.velocity, b.angularVelocity, b.orientation).every(Number.isFinite),
+                'finite state at step ' + step);
+              assert(P.floorContacts(b, view.world.floorY).depth < 1e-8, 'no floor penetration');
+            });
+          }
+        } finally { P.solveContacts = solve; }
+        console.log('  continuations=' + continuations + ', subdivisions=' + subdivisions);
+      });
+    });
+  });
 });
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');

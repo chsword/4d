@@ -21,42 +21,10 @@
   }
 
   function section(mesh, camera, normal) {
-    var eps = 1e-8, verts = [], edges = [], seen = Object.create(null);
     var distances = mesh.verts.map(function (p) { return M4.dot(M4.sub(p, camera), normal); });
-    function vertex(p) {
-      for (var i = 0; i < verts.length; i++) if (M4.len(M4.sub(verts[i], p)) < eps) return i;
-      verts.push(p); return verts.length - 1;
-    }
-    function edge(a, b) {
-      var i = vertex(a), j = vertex(b), key = Math.min(i, j) + ':' + Math.max(i, j);
-      if (i !== j && !seen[key]) { seen[key] = true; edges.push([i, j]); }
-    }
-    mesh.faces.forEach(function (face) {
-      var coplanar = face.every(function (i) { return Math.abs(distances[i]) <= eps; });
-      if (coplanar) {
-        face.forEach(function (i, j) { edge(mesh.verts[i], mesh.verts[face[(j + 1) % face.length]]); });
-        return;
-      }
-      var points = [];
-      face.forEach(function (i, j) {
-        var next = face[(j + 1) % face.length], da = distances[i], db = distances[next];
-        if (Math.abs(da) <= eps) points.push(mesh.verts[i]);
-        if ((da < -eps && db > eps) || (db < -eps && da > eps)) {
-          points.push(M4.add(mesh.verts[i], M4.scale(M4.sub(mesh.verts[next], mesh.verts[i]), da / (da - db))));
-        }
-      });
-      points.forEach(vertex);
-      // Non-coplanar convex faces intersect in a segment (or a single tangent point).
-      var best = 0, pair;
-      points.forEach(function (a, i) {
-        points.slice(i + 1).forEach(function (b) {
-          var d = M4.len(M4.sub(a, b));
-          if (d > best) { best = d; pair = [a, b]; }
-        });
-      });
-      if (pair) edge(pair[0], pair[1]);
-    });
-    return { verts: verts, edges: edges };
+    return Section4.cut(mesh.verts, mesh.faces.map(function (face) {
+      return face.map(function (i, j) { return [i, face[(j + 1) % face.length]]; });
+    }), distances);
   }
 
   function windowMesh(camera, frame) {
