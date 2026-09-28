@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>四维空间：三种画法、物理沙盒与手性实验</title>
+<title>四维空间：三种画法、物理沙盒与几何实验</title>
 <style>
   :root {
     color-scheme: dark;
@@ -120,6 +120,21 @@
       position: sticky; top: 8px; left: auto; right: auto; margin: 12px; z-index: 1;
     }
   }
+  #stage.rings { min-height: 860px; }
+  #stage #cv-rings { touch-action: pan-y; }
+  #rings-evidence {
+    display: none; position: absolute; top: 12px; left: 12px; right: 12px;
+    grid-template-columns: 1fr 1fr; gap: 6px 12px; pointer-events: none; font-size: 11px;
+  }
+  #stage.rings #rings-evidence { display: grid; }
+  #rings-evidence > div { background: var(--panel); border: 1px solid var(--line); padding: 6px 8px; color: var(--dim); }
+  #rings-evidence output { display: block; color: var(--fg); font: 12px/1.5 ui-monospace, monospace; white-space: pre-line; }
+  #rings-evidence #rg-witness { color: var(--warn); }
+  [data-view=rings] fieldset { min-width: 0; }
+  [data-view=rings] .btns { flex-wrap: wrap; }
+  [data-view=rings] select { min-width: 0; max-width: 100%; }
+  [data-view=rings] :focus-visible { outline: 2px solid var(--warn); outline-offset: 2px; }
+  #rg-status, #rg-contact { color: var(--warn); }
   a { color: var(--accent); }
 </style>
 </head>
@@ -135,6 +150,7 @@
     <button class="tab" data-view="physics">④ 四维物理沙盒</button>
     <button class="tab" data-view="linked">⑤ 投影＋切片联动</button>
     <button class="tab" data-view="chirality">⑥ 手性翻转</button>
+    <button class="tab" data-view="rings">⑦ 刚性双环分离</button>
   </nav>
 </header>
 
@@ -149,6 +165,13 @@
     <canvas id="cv-linked" aria-label="共享场景的四维线框投影"></canvas>
     <canvas id="cv-linked-slice" aria-label="共享场景的第一人称切片"></canvas>
     <canvas id="cv-chirality" aria-label="带材料点标号的左右手匹配：三维对照、四维路径、xw 轨迹及 yzw 补充投影"></canvas>
+    <canvas id="cv-rings" aria-label="刚性双环：三维接触对照、四维分离、最近材料点的 xw 尺与连续距离下界"></canvas>
+    <div id="rings-evidence">
+      <div>当前四维中心线最小距离<output id="rg-distance"></output></div>
+      <div>当前解析下界（不是采样）<output id="rg-bound"></output></div>
+      <div>最近材料点 · 固定 u=0、v=π<output id="rg-witness"></output></div>
+      <div>管面间隔 d₄ − 2ρ；ρ=0.1<output id="rg-gap"></output></div>
+    </div>
     <div id="chirality-evidence">
       <div>四维行列式 det(R₄)<output id="ch-det"></output></div>
       <div>材料体积（四面体）<output id="ch-volume"></output></div>
@@ -483,6 +506,67 @@
         <a href="docs/intuition-research.md">A01 完整推导</a>
       </div>
     </section>
+    <!-- ================= 刚性双环 ================= -->
+    <section class="panel" data-view="rings">
+      <h2>⑦ 不切断、不缩小，解除套扣</h2>
+      <p id="rg-note">蓝环 A 固定，黄环 B 只作整体平移。两环中心线半径均为 1，管半径 ρ=0.1；
+        每个标号始终对应同一材料点。先试三维，再走四维的三段路。</p>
+      <fieldset>
+        <legend>三维对照：w=0，只沿 x 拉</legend>
+        <div class="row"><label for="rg-pull">请求位移</label><input id="rg-pull" type="range" min="0" max="3" step="0.001" value="0"><output id="rg-pull-val" class="val">0.000</output></div>
+        <div class="btns"><button id="rg-attempt">尝试拉到 x=3</button><button id="rg-reset3">重置三维</button></div>
+        <p id="rg-contact" role="status"></p>
+        <p>圆圈标出 A(0)、B(π) 之间的首次管面接触点 (0.9,0,0,0)。
+          滑块与左图横拖都扫过整条拉动路径，不会传送穿过接触。</p>
+        <p>这一个拉动实验不是所有三维运动的穷举。任意三维平移、旋转乃至不相交变形
+          都保持链环数 −1，无法变成分开的 0；下方有证明。</p>
+      </fieldset>
+      <fieldset>
+        <legend>四维路径：第二段不可省</legend>
+        <div class="row"><label for="rg-mode">路径</label><select id="rg-mode"><option value="full">升 w → 移 x → 降 w</option><option value="omit">失败：升 w → 不移 → 降 w</option></select></div>
+        <div class="row"><label for="rg-time">进度 t</label><input id="rg-time" type="range" min="0" max="3" step="0.001" value="0"><output id="rg-time-val" class="val">0.000</output></div>
+        <div class="btns">
+          <button id="rg-play">播放</button><button id="rg-start">起点</button>
+          <button id="rg-crossing">停在投影交点</button><button id="rg-end">终点</button>
+        </div>
+        <p id="rg-status" role="status"></p>
+        <p>播放会在第二段 x=1、w=1 自动暂停一次；再按播放继续。右图也可横拖。
+          省掉平移时全程同样安全，却会原样回到链环。</p>
+      </fieldset>
+      <div class="row"><label for="rg-camera">共同相机</label><select id="rg-camera"><option value="oblique">斜看两环</option><option value="front">正看 xy</option></select></div>
+      <p>相机只改变画法。两幅大图都是 xyz 正交投影，不是 w=0 切片；
+        屏幕上的交叉还可能只是视线遮挡，只有 dxyz=0 才是 xyz 中真正相交。</p>
+      <fieldset>
+        <legend>连续安全证书 · 完整路径</legend>
+        <div class="keys">
+          <div>① x=0，w: 0→1</div><div>d₄ ≥ √(1+w²)</div>
+          <div>② w=1，x: 0→3</div><div>d₄ ≥ 1</div>
+          <div>③ x=3，w: 1→0</div><div>d₄ ≥ 2</div>
+        </div>
+        <p>每段对所有材料参数 u、v 和连续时间成立，全部严格大于管径 2ρ=0.2。
+          当前最小距离由最近材料点坐标计算；下界不会被当成测量值。</p>
+        <p>96 段闭合胶囊独立核对：<output id="rg-capsules"></output></p>
+        <p>上述区间为折线中心线距离 ± 两倍弓高 2(1−cos(π/96))，
+          包含圆弧的精确距离；它不是连续时间安全性的依据。整个非凸环不送入 GJK/SAT。</p>
+      </fieldset>
+      <details>
+        <summary>为什么任意三维绕行都不行？</summary>
+        <p>给 A 按 u 增大定向，其 xy 填充圆盘取法向 +z。
+          初始 B 与圆盘内部只在 v=π 的 (0,0,0) 横截一次，z 导数为 −1，
+          故链环数 Lk=−1。v=0 的另一个过平面点 (2,0,0) 在盘外。</p>
+        <p>不相交闭曲线的 Gauss 映射 (A−B)/|A−B| : S¹×S¹→S²
+          在连续三维运动中始终有定义。按 du∧dv 定向，Lk=−deg(G)，其整数度数不变。
+          完全分开的两环 Lk=0，故要从 −1 变成 0 必须先发生中心线相交；
+          有厚度的管会更早接触。这是拓扑证明，不是搜索没找到路。</p>
+        <p>测试还用独立 Gauss 双重积分核对整数。四维中差向量在 S³ 而不是 S² 上，
+          所以上述三维不变量不再阻挡这条路径；并非声称 S³ 内的链环也能随意解开。</p>
+      </details>
+      <div class="note">在 t=4/3，A(0)=(1,0,0,0)，B(π)=(1,0,0,1)：
+        xyz 完全相同，但 w 相差 1，四维中心线距离为 1、管面间隔为 0.8。
+        <b>不是穿模，是投影丢了 w。</b>结论限定为自由 R⁴ 中的这两只刚性圆环。
+        <a href="docs/intuition-research.md">A02 路径与边界</a>
+      </div>
+    </section>
   </aside>
 </main>
 
@@ -492,12 +576,14 @@
 <script src="js/collide4.js"></script>
 <script src="js/scene4.js"></script>
 <script src="js/chirality4.js"></script>
+<script src="js/rings4.js"></script>
 <script src="js/view-projection.js"></script>
 <script src="js/view-slice.js"></script>
 <script src="js/view-linked.js"></script>
 <script src="js/view-analogy.js"></script>
 <script src="js/view-physics.js"></script>
 <script src="js/view-chirality.js"></script>
+<script src="js/view-rings.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

@@ -452,8 +452,9 @@ function browser() {
   env.document.querySelectorAll = function (selector) {
     if (selector === '.tab') return tabs;
     if (selector === '.panel') return panels;
-    assert(selector === '[id^="ch-"]', 'supported DOM selector');
-    return Object.keys(nodes).filter(function (id) { return id.indexOf('ch-') === 0; }).map(function (id) { return nodes[id]; });
+    assert(selector === '[id^="ch-"]' || selector === '[id^="rg-"]', 'supported DOM selector');
+    var prefix = selector === '[id^="ch-"]' ? 'ch-' : 'rg-';
+    return Object.keys(nodes).filter(function (id) { return id.indexOf(prefix) === 0; }).map(function (id) { return nodes[id]; });
   };
   vm.createContext(env);
   Array.from(html.matchAll(/<script src="([^"]+)"><\/script>/g)).forEach(function (match) {
@@ -499,7 +500,8 @@ test('application wiring: linked movement, sliders, tab cleanup, resize and fram
   near(gl.uniforms.uCam[0], 0, 1e-12, 'switch clears held input');
   env.innerWidth = 600; env.emit('resize');
   assert(nodes['cv-linked-slice'].style.left === '0' && nodes['cv-linked-slice'].style.top === '350px', 'stacked on narrow screen');
-  assert(b.tabs.length === 6 && b.tabs[5].dataset.view === 'chirality', 'chirality is the sixth tab');
+  assert(b.tabs.length === 7 && b.tabs[5].dataset.view === 'chirality' && b.tabs[6].dataset.view === 'rings',
+    'chirality remains sixth; rings is seventh');
   select('chirality'); frame(1);
   assert(nodes['cv-chirality'].classList.contains('active') && !nodes['cv-linked'].classList.contains('active'), 'isolated sixth canvas');
   nodes['ch-best'].emit('click'); frame(1);
@@ -513,6 +515,23 @@ test('application wiring: linked movement, sliders, tab cleanup, resize and fram
   var angle = nodes['ch-angle-val'].textContent;
   select('analogy'); frame(5); select('chirality'); frame(1);
   assert(nodes['ch-angle-val'].textContent === angle, 'tab switch stops chirality playback');
+  select('rings'); frame(1);
+  assert(nodes['cv-rings'].classList.contains('active') && !nodes['cv-chirality'].classList.contains('active'), 'isolated seventh canvas');
+  nodes['rg-attempt'].emit('click'); frame(1);
+  assert(nodes['rg-contact'].textContent.indexOf('x=0.800000') >= 0, 'wired 3D first-contact stop');
+  nodes['rg-crossing'].emit('click'); frame(1);
+  assert(nodes['rg-witness'].textContent.indexOf('wB=1.000') >= 0, 'wired hidden-direction evidence');
+  near(parseFloat(nodes['rg-distance'].textContent), 1, 0, 'actual 4D distance at crossing');
+  nodes['rg-end'].emit('click'); frame(1);
+  assert(nodes['rg-status'].textContent.indexOf('链环数 0') >= 0, 'full path separates');
+  nodes['rg-mode'].value = 'omit'; nodes['rg-mode'].emit('change');
+  nodes['rg-end'].emit('click'); frame(1);
+  assert(nodes['rg-status'].textContent.indexOf('仍为 −1') >= 0, 'omitted translation stays linked');
+  assert(nodes['rg-bound'].textContent.indexOf('1.000000') >= 0, 'failure mode uses its own bound');
+  nodes['rg-start'].emit('click'); nodes['rg-play'].emit('click'); frame(1);
+  var ringTime = nodes['rg-time-val'].textContent;
+  select('projection'); frame(1); select('rings'); frame(1);
+  assert(nodes['rg-time-val'].textContent === ringTime, 'tab switch pauses rings');
   assert(b.errors.length === 0, 'no runtime failures during live frames');
 });
 

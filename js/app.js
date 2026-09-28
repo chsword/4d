@@ -10,7 +10,8 @@
     physics: document.getElementById('cv-physics'),
     linked: document.getElementById('cv-linked'),
     linkedSlice: document.getElementById('cv-linked-slice'),
-    chirality: document.getElementById('cv-chirality')
+    chirality: document.getElementById('cv-chirality'),
+    rings: document.getElementById('cv-rings')
   };
   var views = {};
   var current = 'analogy';
@@ -54,12 +55,18 @@
     views.chirality = { error: '手性视图初始化失败：' + err.message };
     console.error(err);
   }
+  try {
+    views.rings = new RingsView(canvases.rings);
+  } catch (err) {
+    views.rings = { error: '双环视图初始化失败：' + err.message };
+    console.error(err);
+  }
 
   /* 切片视图是逐像素 ray marching：每个像素要求几十次四维距离场，
      按 devicePixelRatio 全分辨率渲染在集显上会掉到个位数帧率。
      线框那两个视图是 Canvas 2D，反而需要高 dpr 才不毛糙。 */
   var SCALE = { projection: dpr, analogy: dpr, slice: Math.min(dpr, 1), physics: Math.min(dpr, 1),
-    linked: dpr, linkedSlice: Math.min(dpr, 1), chirality: dpr };
+    linked: dpr, linkedSlice: Math.min(dpr, 1), chirality: dpr, rings: dpr };
 
   function resize() {
     stage.style.minHeight = '';
@@ -67,6 +74,10 @@
     // 用实际画布宽度决定纵排高度，避免滚动条让 CSS 断点与画面断点错位。
     if (current === 'chirality' && r.width < 680) {
       stage.style.minHeight = '1240px';
+      r = stage.getBoundingClientRect();
+    }
+    if (current === 'rings' && r.width < 700) {
+      stage.style.minHeight = '1420px';
       r = stage.getBoundingClientRect();
     }
     for (var k in canvases) {
@@ -90,6 +101,7 @@
     if (views.linked && views.linked.slice) views.linked.slice.keys = {};
     if (views.physics && views.physics.clearInput && !views.physics.error) views.physics.clearInput();
     if (views.chirality && !views.chirality.error) views.chirality.clearInput();
+    if (views.rings && !views.rings.error) views.rings.clearInput();
     current = name;
     for (var k in canvases) {
       canvases[k].classList.toggle('active', k === name || (name === 'linked' && k === 'linkedSlice'));
@@ -106,6 +118,7 @@
     if (document.pointerLockElement && document.pointerLockElement !== inputCanvas) document.exitPointerLock();
     stage.classList.toggle('linked', name === 'linked');
     stage.classList.toggle('chirality', name === 'chirality');
+    stage.classList.toggle('rings', name === 'rings');
     resize();
   }
   Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (t) {
@@ -343,6 +356,53 @@
     };
   } else if (ch && ch.error) {
     document.getElementById('ch-note').textContent = ch.error;
+  }
+
+  /* ---------- 双环：三维请求先经过首次接触限制；四维只走 A02 路径 ---------- */
+  var rg = views.rings;
+  if (rg && !rg.error) {
+    var re = {};
+    Array.prototype.forEach.call(document.querySelectorAll('[id^="rg-"]'), function (el) { re[el.id.slice(3)] = el; });
+    re.pull.addEventListener('input', function () { rg.request3 = Number(this.value); });
+    re.attempt.addEventListener('click', function () { rg.request3 = 3; });
+    re.reset3.addEventListener('click', function () { rg.request3 = 0; });
+    re.mode.addEventListener('change', function () { rg.setMode(this.value === 'omit'); });
+    re.time.addEventListener('input', function () { rg.seek(Number(this.value)); });
+    re.start.addEventListener('click', function () { rg.seek(0); });
+    re.end.addEventListener('click', function () { rg.seek(3); });
+    re.crossing.addEventListener('click', function () {
+      rg.setMode(false); re.mode.value = 'full'; rg.seek(Rings4.crossingTime);
+    });
+    re.play.addEventListener('click', function () {
+      if (rg.t === 3) rg.seek(0);
+      rg.playing = !rg.playing;
+    });
+    re.camera.addEventListener('change', function () { rg.camera = this.value; });
+    document.addEventListener('visibilitychange', function () { if (document.hidden) rg.clearInput(); });
+    function ringText(id, value) { if (re[id].textContent !== value) re[id].textContent = value; }
+    rg.onUpdate = function (s) {
+      var p = s.pose, q = s.closest;
+      re.time.value = rg.t; re.pull.value = rg.request3;
+      ringText('time-val', rg.t.toFixed(3)); ringText('pull-val', rg.request3.toFixed(3));
+      ringText('play', rg.playing ? '暂停' : '播放');
+      ringText('distance', q.distance.toFixed(6) + ' > 0.200000');
+      var formula = rg.omitTranslation || p.stage === 1 ? '√(1+w²)' : p.stage === 2 ? '1' : '2';
+      ringText('bound', '≥ ' + formula + ' = ' + p.bound.toFixed(6));
+      ringText('witness', 'wA=0.000 · wB=' + q.b[3].toFixed(3) + '\ndxyz=' + q.projected.toFixed(6));
+      ringText('gap', (q.distance - 0.2).toFixed(6) + '\n保证 ≥ ' + (p.bound - 0.2).toFixed(6));
+      ringText('capsules', '[' + s.capsules.curveLower.toFixed(6) + ', ' + s.capsules.curveUpper.toFixed(6) + ']');
+      ringText('contact', '实际 x=' + s.pose3.x.toFixed(6) + '，d₃=' + s.closest3.distance.toFixed(6)
+        + (s.pose3.contact ? ' = 2ρ：管面接触，停止。链环数仍为 −1。' : ' > 2ρ：尚未接触，仍套扣。'));
+      ringText('status', rg.t === 3
+        ? rg.omitTranslation ? '失败：已回到 w=0 的原构型，链环数仍为 −1。安全升降不等于解环。'
+          : '已分离：两环回到 w=0；B 的 x 范围 [3,5]，链环数 0。'
+        : !rg.omitTranslation && Math.abs(rg.t - Rings4.crossingTime) < 1e-12
+          ? 'xyz 真正相交！A(0)、B(π) 的 w 分别为 0、1，d₄=1 > 0.2；看下方 xw 尺。'
+          : rg.omitTranslation ? '省掉第二段平移：只升降，最终还是同一个链环。'
+            : '三段均有连续安全下界；第二段的 xyz 重影不代表四维接触。');
+    };
+  } else if (rg && rg.error) {
+    document.getElementById('rg-note').textContent = rg.error;
   }
 
   /* ---------- 类比视图控件 ---------- */
