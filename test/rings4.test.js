@@ -38,6 +38,20 @@ test('fixed material identities, radius, source immutability and A02 poses', fun
   });
 });
 
+test('F11 returned certificate matches every segment and never exceeds independent distance', function () {
+  var times = Array.from({ length: 601 }, function (_, i) { return i / 200; });
+  [1, 2].forEach(function (t) { times.push(t - 1e-9, t, t + 1e-9); });
+  [false, true].forEach(function (omit) {
+    times.forEach(function (t) {
+      var p = R.path(t, omit), w = t < 1 ? t : t < 2 ? 1 : 3 - t;
+      var x = omit ? 0 : 3 * Math.max(0, Math.min(1, t - 1));
+      var expected = omit || t < 1 ? Math.hypot(1, w) : t < 2 ? 1 : 2;
+      near(p.bound, expected, 2 * EPS, 'F11 returned analytic certificate');
+      assert(p.bound <= Math.hypot(x - 1, w) + 4 * EPS, 'F11 bound cannot exceed true nearest-point distance');
+    });
+  });
+});
+
 test('rigidity: all 4560 pairs per ring at 1537 times, including omitted translation', function () {
   var pairs = [], maxAbsolute = 0, maxRelative = 0;
   for (var i = 0; i < 96; i++) for (var j = i + 1; j < 96; j++) {

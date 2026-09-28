@@ -3,7 +3,7 @@
  * 思路完全照搬《平面国》：一个二维生物看不到球，只能看到球与它所在
  * 平面的交 —— 一个会长大又缩小的圆。把维数各加一：
  *
- *   我们看不到四维物体，只能看到它与我们所在的那个三维超平面的交。
+ *   本项目约定显示物体与相机所选三维超平面的交，不是视网膜模型。
  *
  * 所以渲染管线是：
  *   1. 玩家在 4D 里有一个位置 uCam 和一组正交基 (Ax, Ay, Az, Aw)；
@@ -14,8 +14,8 @@
  *   3. 法线取 map 在 Ax/Ay/Az 三个方向上的差分 —— 得到的是切片内的法线，
  *      也就是切片里的居民真正会看到的明暗。
  *
- * 好处：没有任何形变，看到的是 100% 真实的局部几何（Miegakure / 4D Toys
- * 走的就是这条路）。代价：一次只看到一层，需要靠沿第四维移动来"扫"出全貌。
+ * 理想截面保留内部欧氏距离；二维透视、有限步长/命中容差和差分法线
+ * 仍有误差。一次只显示一层，有限次扫描不等于完整物体。
  */
 (function (global) {
   'use strict';
@@ -59,8 +59,6 @@
     'uniform float uSelected;',
     '/* SCENE_UNIFORMS */',
     '',
-    'const float FAR = 70.0;',
-    '',
     Scene4.library,
     '',
     '// no vector ternary: some old GLSL drivers reject "c ? vecA : vecB"',
@@ -69,6 +67,7 @@
     '/* SCENE_MAP */',
     '',
     'vec4 lift(vec3 q){ return uCam + q.x * uAx + q.y * uAy + q.z * uAz; }',
+    Scene4.rayGLSL,
     '',
     'vec3 sliceNormal(vec3 q){',
     '  float e = 0.0022;',
@@ -123,19 +122,10 @@
     '  vec2 uv = (gl_FragCoord.xy - 0.5 * uRes) / uRes.y;',
     '  vec3 rd = normalize(vec3(uv, uFocal));',
     '',
-    '  float t = 0.0, id = 0.0, ghost = 0.0;',
-    '  bool hit = false;',
-    '  for (int i = 0; i < 128; i++) {',
-    '    vec4 p = lift(rd * t);',
-    '    vec2 h = map(p);',
-    '    if (uXRay > 0.5) {',
-    '      float o = min(map(p + 1.1 * uAw).x, map(p - 1.1 * uAw).x);',
-    '      ghost += (1.0 - smoothstep(0.0, 0.5, o)) * 0.014;',
-    '    }',
-    '    if (h.x < 0.0018 * max(t, 1.0)) { hit = true; id = h.y; break; }',
-    '    t += h.x * 0.92;',
-    '    if (t > FAR) break;',
-    '  }',
+    '  float ghost;',
+    '  vec2 rayHit = traceRay(rd, ghost);',
+    '  float t = rayHit.x, id = rayHit.y;',
+    '  bool hit = id > 0.0;',
     '',
     '  vec3 sky = mix(vec3(0.035, 0.045, 0.07), vec3(0.10, 0.13, 0.20), 0.5 + 0.5 * rd.y);',
     '  vec3 col = sky;',

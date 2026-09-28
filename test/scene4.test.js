@@ -542,6 +542,14 @@ test('application wiring: linked movement, sliders, tab cleanup, resize and fram
   near(parseFloat(nodes['rg-distance'].textContent), 1, 0, 'actual 4D distance at crossing');
   nodes['rg-end'].emit('click'); frame(1);
   assert(nodes['rg-status'].textContent.indexOf('链环数 0') >= 0, 'full path separates');
+  [0, 1 - 1e-6, 1, 1 + 1e-6, 2 - 1e-6, 2, 2 + 1e-6, 3].forEach(function (t) {
+    nodes['rg-time'].value = String(t); nodes['rg-time'].emit('input'); frame(1);
+    var w = t < 1 ? t : t < 2 ? 1 : 3 - t;
+    var bound = t < 1 ? Math.hypot(1, w) : t < 2 ? 1 : 2;
+    var formula = t < 1 ? '√(1+w²)' : t < 2 ? '1' : '2';
+    assert(nodes['rg-bound'].textContent === '≥ ' + formula + ' = ' + bound.toFixed(6), 'F11 actual displayed centerline certificate');
+    assert(nodes['rg-gap'].textContent.indexOf('保证 ≥ ' + (bound - 0.2).toFixed(6)) >= 0, 'F11 actual displayed tube gap');
+  });
   nodes['rg-mode'].value = 'omit'; nodes['rg-mode'].emit('change');
   nodes['rg-end'].emit('click'); frame(1);
   assert(nodes['rg-status'].textContent.indexOf('仍为 −1') >= 0, 'omitted translation stays linked');
@@ -551,6 +559,36 @@ test('application wiring: linked movement, sliders, tab cleanup, resize and fram
   select('projection'); frame(1); select('rings'); frame(1);
   assert(nodes['rg-time-val'].textContent === ringTime, 'tab switch pauses rings');
   assert(b.errors.length === 0, 'no runtime failures during live frames');
+});
+
+test('F08 parallel and rotated section claims follow the actual primitive SDFs', function () {
+  var duo = isolated(object('duocylinder', { r1: 1.15, r2: 1.15 }));
+  [0, 0.4, 1.14, 1.15].forEach(function (w) {
+    var halfHeight = Math.sqrt(1.15 * 1.15 - w * w);
+    near(duo.sdf([0, 0, halfHeight, w]), 0, 3e-16, 'cylinder end/disc');
+    assert(duo.sdf([0, 0, 0, w]) <= 0, 'filled axis, no annular hole');
+  });
+  assert(duo.sdf([0, 0, 0, 1.16]) > 0, 'duocylinder vanishes beyond endpoint');
+  var torus = isolated(object('spheritorus', { R: 1.15, r: 0.45 }));
+  [0, 0.3, 0.44, 0.45].forEach(function (w) {
+    var h = Math.sqrt(0.45 * 0.45 - w * w);
+    [-1, 1].forEach(function (sign) {
+      near(torus.sdf([1.15 + sign * h, 0, 0, w]), 0, 3e-16, 'spherical shell radii');
+    });
+  });
+  assert(torus.sdf([1.15, 0, 0, 0.46]) > 0, 'spherical shell vanishes');
+  // z=0 after a pi/2 zw turn: (sqrt(x*x+y*y)-R)^2+w*w<=r*r.
+  for (var i = 0; i < 100; i++) {
+    var u = i * 0.71, v = i * 1.31, r = 1.15 + 0.45 * Math.cos(v);
+    near(torus.sdf([r * Math.cos(u), r * Math.sin(u), 0, 0.45 * Math.sin(v)]), 0, 6e-16, 'tilted solid torus boundary');
+  }
+  var v = camera(S.gallery, [4, 0.3, -10, 3]); v.a_zw = Math.PI / 2;
+  var F = v.frame(), n = M4.col(F, 3);
+  assert(S.gallery.sdf(v.cam) > v.cameraRadius, 'safe rotated tutorial camera');
+  vectorNear(n, [0, 0, -1, 0], 1e-15, 'zw quarter-turn really selects z=-10');
+  var direction = M4.normalize(M4.mulVec(F, [1.15, 0, 3, 0]));
+  var hit = S.gallery.raycast(v.cam, direction);
+  assert(hit && hit.object.id === 'spheritorus', 'tilted torus is not occluded by another exhibit');
 });
 
 test('F01/F02 real buttons control actual matrices and all four panels, not just slider values', function () {

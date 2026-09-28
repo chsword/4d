@@ -570,6 +570,9 @@ test('six-body demo, classic script order and rendering uniforms/SDF are wired w
   require('../js/view-slice.js');
   require('../js/view-physics.js');
   var html = require('fs').readFileSync(require('path').join(__dirname, '../index.html'), 'utf8');
+  ['physics4', 'collide4', 'view-physics', 'scene4', 'view-slice'].forEach(function (file) {
+    assert(html.indexOf('src="js/' + file + '.js"') >= 0, 'required classic script exists: ' + file);
+  });
   assert(html.indexOf('src="js/physics4.js"') < html.indexOf('src="js/collide4.js"') &&
     html.indexOf('src="js/collide4.js"') < html.indexOf('src="js/view-physics.js"'), 'classic script order');
   assert(html.indexOf('src="js/scene4.js"') < html.indexOf('src="js/view-slice.js"'), 'shared SDF library before renderer');
@@ -607,9 +610,13 @@ test('six-body demo, classic script order and rendering uniforms/SDF are wired w
       for (var step = 0; step < 1440; step++) view.world.step(1 / 240);
       view.draw();
       assert(uploaded.uCount === 6, 'upload count matches active bodies');
+      near(uploaded.uFloor, view.world.floorY, 0, 'F19 floor uniform');
       view.world.bodies.forEach(function (body, i) {
         vectorNear(uploaded['uBodyPos[0]'].slice(i * 4, i * 4 + 4), body.position, 1e-6, 'position uniform');
         vectorNear(uploaded['uInvR[0]'].slice(i * 16, i * 16 + 16), body.orientation, 1e-7, 'inverse R upload');
+        near(uploaded['uShape[0]'][i], body.shape === 'glome' ? 1 : 0, 0, 'F19 shape uniform');
+        var size = body.shape === 'glome' ? [body.radius, body.radius, body.radius, body.radius] : body.halfSize;
+        vectorNear(uploaded['uSize[0]'].slice(i * 4, i * 4 + 4), size.map(Math.fround), 0, 'F19 exact float32 size/radius upload');
       });
     });
     assert(draws === 2, 'draw actual shared SliceView path');

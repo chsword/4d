@@ -457,7 +457,12 @@ test('07 two bounded stereographic charts, inverse, chord metric and full group 
 test('08 global S3 frame, noncoordinate bracket, Hopf fibers and restricted equivariance', function () {
   for (var k = 0; k < 2048; k++) {
     var q = sphere(4), E = frame(q), h = hopf(q);
-    vectorNear(gram([q].concat(E)), M4.ident(), 7e-16, 'global orthonormal tangent frame');
+    // Sampling/normalization has its own forward-error budget. The algebraic
+    // identity is Gram(q,qi,qj,qk)=|q|^2 I even for a nonunit q: its 7e-16
+    // correctness tolerance is NOT relaxed to absorb the input's norm error.
+    var normSquared = dot(q, q);
+    near(normSquared, 1, 4 * Number.EPSILON, 'normalized input budget');
+    vectorNear(gram([q].concat(E)), scale(M4.ident(), normSquared), 7e-16, 'global orthonormal tangent frame');
     vectorNear(sub(qmul(E[0], J), qmul(E[1], I)), scale(E[2], 2), 0, 'nonzero frame bracket');
     near(norm(h), 1, 9e-16, 'Hopf base lies on S2');
     var theta = 2 * Math.PI * random(), phase = expPure([theta, 0, 0]);
@@ -520,6 +525,7 @@ test('10 Hopf torus coordinates and polar metric, with endpoint degeneracies', f
 test('11 record dimensions, exact colored coordinates, lost pairing and slice reconstruction', function () {
   for (var k = 0; k < 1024; k++) {
     var x = vector(4), y = vector(4), delta = 0.2 + random();
+    vectorNear(M4.ortho4to3(x), [x[0], x[1], x[2], 1], 0, 'orthographic coordinates, not a constant map');
     vectorNear(M4.ortho4to3(x), M4.ortho4to3(add(x, [0, 0, 0, delta])), 0, 'orthographic fiber collision');
     var camera = [0, 0, 0, 4], farther = add(camera, scale(sub(x, camera), 1 + random()));
     vectorNear(M4.project4to3(x, 4).slice(0, 3), M4.project4to3(farther, 4).slice(0, 3),
@@ -683,6 +689,13 @@ test('13 constructive orbit completeness, missing slice features and actual stan
   vm.runInNewContext(scripts[0][1], sandbox, { filename: 'spin-atlas.inline.js', timeout: 3000 });
   var demo = sandbox.window.Math4Demo;
   assert(!!demo && drawCalls > 100, 'actual prototype initialized and rendered');
+  var referenceSeeds = [ONE, [Math.SQRT1_2, 0, 0, Math.SQRT1_2],
+    [Math.SQRT1_2, 0, -Math.SQRT1_2, 0], J];
+  var referenceBases = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [-1, 0, 0]];
+  demo.exportData().seedQuaternions.forEach(function (q, i) {
+    vectorNear(hopf(q), referenceBases[i], 5e-16, 'F13 independent Hopf base');
+    vectorNear(q, referenceSeeds[i], 2e-16, 'F13 independent phase-zero seed');
+  });
   for (k = 0; k < 256; k++) {
     var R = rotations[k], decomposition = recover(R);
     demo.state.left = decomposition.l; demo.state.right = decomposition.r;
@@ -693,7 +706,7 @@ test('13 constructive orbit completeness, missing slice features and actual stan
     var records = demo.samples(), data = demo.exportData();
     assert(records.length === 512 && data.sampleCountPerFiber === 128 && data.seedQuaternions.length === 4, 'export shape');
     for (var j = 0; j < records.length; j += 31) {
-      var record = records[j], seedQuaternion = data.seedQuaternions[record.fiber];
+      var record = records[j], seedQuaternion = referenceSeeds[record.fiber];
       var expected = M4.mulVec(R, qmul(seedQuaternion, expPure([record.theta, 0, 0])));
       vectorNear(record.point, expected, 4e-15, 'actual sampled curve vs matrix action');
       near(norm(record.point), 1, 3e-15, 'prototype remains on S3');
@@ -724,9 +737,21 @@ test('13 constructive orbit completeness, missing slice features and actual stan
   }
   ['leftBall', 'rightBall'].forEach(function (id) {
     var handlers = elements[id].handlers;
+    var side = id === 'leftBall' ? 'left' : 'right', oldState = demo.state[side].slice();
+    // Invert the documented display camera as a 3x3 matrix, independently
+    // of demo.unspatial/deltaBetween; screen y points down.
+    var cy = Math.cos(0.6), sy = Math.sin(0.6), cp = Math.cos(-0.3), sp = Math.sin(-0.3);
+    var inverse = [[cy, sy * sp, -sy * cp], [0, cp, sp], [sy, -cy * sp, cy * cp]];
+    function screenVector(x, y) {
+      var u = (x - 140) / 90, v = (120 - y) / 90, screen = [u, v, Math.sqrt(1 - u * u - v * v)];
+      return inverse.map(function (row) { return dot(row, screen); });
+    }
+    var fromScreen = screenVector(140, 120), toScreen = screenVector(177, 82);
+    var expectedDelta = unit([1 + dot(fromScreen, toScreen)].concat(cross(fromScreen, toScreen)));
     handlers.pointerdown(pointerEvent(140, 120));
     handlers.pointermove(pointerEvent(177, 82));
     handlers.pointerup(pointerEvent(177, 82));
+    vectorNear(demo.state[side], unit(qmul(expectedDelta, oldState)), 5e-16, 'F13 actual drag direction and display inverse');
     var snapshot = demo.state.left.concat(demo.state.right);
     handlers.pointermove(pointerEvent(110, 90));
     vectorNear(demo.state.left.concat(demo.state.right), snapshot, 0, 'released pointer does not keep rotating');
@@ -741,6 +766,46 @@ test('13 constructive orbit completeness, missing slice features and actual stan
   assert(downloaded.type === 'application/json' && revoked && downloadName === 'math4-spin-atlas.json', 'file export lifecycle');
   assert(exported.samples.length === 512 && exported.curveRule.indexOf('conjugate(right)') >= 0, 'complete data, not screenshot');
   vectorNear(exported.samples[0].point, demo.samples()[0].point, 0, 'JSON retains point coordinates');
+});
+
+test('F12 direct M4 contracts: every basic API and all six oriented planes', function () {
+  var a = [1, -2, 3, -4], b = [-5, 6, 7, 8];
+  near(M4.dot(a, b), -28, 0, 'dot');
+  near(M4.len([1, 2, 2, 4]), 5, 0, 'length');
+  vectorNear(M4.scale(a, -2), [-2, 4, -6, 8], 0, 'scale');
+  vectorNear(M4.add(a, b), [-4, 4, 10, 4], 0, 'add');
+  vectorNear(M4.sub(a, b), [6, -8, -4, -12], 0, 'subtract');
+  vectorNear(M4.normalize([1, 2, 2, 4]), [0.2, 0.4, 0.4, 0.8], 0, 'normalize');
+  vectorNear(M4.normalize([0, 0, 0, 0]), [0, 0, 0, 0], 0, 'zero normalization contract');
+  var A = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+  var B = [2, 0, 0, 0, 0, 3, 0, 0, 0, 0, 4, 0, 0, 0, 0, 5];
+  vectorNear(M4.ident(), [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], 0, 'identity');
+  var product = A.map(function (x, i) { return x * [2, 3, 4, 5][i % 4]; });
+  vectorNear(M4.mul(A, B), product, 0, 'row-major product');
+  vectorNear(M4.compose([A, B]), product, 0, 'ordered composition');
+  vectorNear(M4.compose([]), M4.ident(), 0, 'empty composition');
+  vectorNear(M4.mulVec(A, [1, 2, 3, 4]), [30, 70, 110, 150], 0, 'matrix vector');
+  vectorNear(M4.transpose(A), [1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15, 4, 8, 12, 16], 0, 'transpose');
+  for (var c = 0; c < 4; c++) vectorNear(M4.col(A, c), [1 + c, 5 + c, 9 + c, 13 + c], 0, 'column');
+  [['xy', 0, 1], ['xz', 0, 2], ['xw', 0, 3], ['yz', 1, 2], ['yw', 1, 3], ['zw', 2, 3]].forEach(function (p) {
+    [-1.3, 0, Math.PI / 2].forEach(function (angle) {
+      var R = M4.rotation(p[0], angle);
+      basis.forEach(function (e, j) {
+        var expected = e.slice();
+        if (j === p[1] || j === p[2]) {
+          expected[j] = Math.cos(angle);
+          expected[j === p[1] ? p[2] : p[1]] = (j === p[1] ? 1 : -1) * Math.sin(angle);
+        }
+        vectorNear(M4.mulVec(R, e), expected, 0, 'all plane basis actions ' + p[0]);
+      });
+    });
+  });
+  var s = Math.SQRT1_2, Q = [s, -s, 0, 0, s, s, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+  var perturbed = M4.mul(Q, [2, 0.2, -0.1, 0.3, 0, 3, 0.4, -0.2, 0, 0, 4, 0.5, 0, 0, 0, 5]);
+  vectorNear(M4.orthonormalize(perturbed), Q, 4e-16, 'Gram-Schmidt removes scale and shear, preserving column order');
+  vectorNear(M4.project4to3([1, -2, 3, 2], 4), [2, -4, 6, 2], 0, 'perspective coordinates');
+  vectorNear(M4.ortho4to3([1, -2, 3, 9]), [1, -2, 3, 1], 0, 'orthographic coordinates');
+  vectorNear(M4.stereo4to3([1, 0, 0, 0]), [1, 0, 0, 1], 0, 'stereographic equator');
 });
 
 console.log('SO(4) matrix reconstruction max=' + reconstructionError.toExponential(6) +

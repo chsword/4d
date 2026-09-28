@@ -33,11 +33,39 @@
     if (!/[.e]/i.test(s)) s += '.0';
     return s;
   }
+  // Share the predicates and advance expression, not just their constants.
+  // CPU interprets this protocol; GLSL is emitted from the same expression AST.
+  var ray = freeze({
+    steps: 128,
+    hit: expr('lt', 'distance', expr('mul', 0.0018, expr('max', 't', 1))),
+    advance: expr('add', 't', expr('mul', 'distance', 0.92)),
+    stop: expr('gt', 't', 70)
+  });
+  var rayGLSL = [
+    'vec2 traceRay(vec3 rd, out float ghost){',
+    '  float t = 0.0;',
+    '  ghost = 0.0;',
+    '  for (int i = 0; i < ' + ray.steps + '; i++) {',
+    '    vec4 p = lift(rd * t);',
+    '    vec2 h = map(p);',
+    '    float distance = h.x;',
+    '    if (uXRay > 0.5) {',
+    '      float o = min(map(p + 1.1 * uAw).x, map(p - 1.1 * uAw).x);',
+    '      ghost += (1.0 - smoothstep(0.0, 0.5, o)) * 0.014;',
+    '    }',
+    '    if (' + emit(ray.hit) + ') return vec2(t, h.y);',
+    '    t = ' + emit(ray.advance) + ';',
+    '    if (' + emit(ray.stop) + ') break;',
+    '  }',
+    '  return vec2(t, 0.0);',
+    '}'
+  ].join('\n');
   function emit(e) {
     if (typeof e === 'number') return float(e);
     if (typeof e === 'string') return e;
     var a = e.args.map(emit);
-    if (e.op === 'add' || e.op === 'sub') return '(' + a[0] + (e.op === 'add' ? ' + ' : ' - ') + a[1] + ')';
+    var operators = { add: '+', sub: '-', mul: '*', lt: '<', gt: '>' };
+    if (operators[e.op]) return '(' + a[0] + ' ' + operators[e.op] + ' ' + a[1] + ')';
     if (e.op === 'length') return 'length(vec' + a.length + '(' + a.join(', ') + '))';
     return e.op + '(' + a.join(', ') + ')';
   }
@@ -48,6 +76,9 @@
     switch (e.op) {
       case 'add': return a[0] + a[1];
       case 'sub': return a[0] - a[1];
+      case 'mul': return a[0] * a[1];
+      case 'lt': return a[0] < a[1];
+      case 'gt': return a[0] > a[1];
       case 'abs': return Math.abs(a[0]);
       case 'min': return Math.min(a[0], a[1]);
       case 'max': return Math.max(a[0], a[1]);
@@ -119,13 +150,15 @@
       move: function (p, delta, radius) { return move(entries, p, delta, radius); },
       raycast: function (p, direction) {
         var t = 0;
-        for (var i = 0; i < 128; i++) {
+        for (var i = 0; i < ray.steps; i++) {
           var point = M4.add(p, M4.scale(direction, t)), hit = sample(point);
-          if (hit.distance < 0.0018 * Math.max(t, 1)) {
+          var state = { distance: hit.distance, t: t };
+          if (evaluate(ray.hit, null, state)) {
             return { point: point, local: M4.sub(point, hit.object.center), object: hit.object, distance: t };
           }
-          t += hit.distance * 0.92;
-          if (t > 70) break;
+          t = evaluate(ray.advance, null, state);
+          state.t = t;
+          if (evaluate(ray.stop, null, state)) break;
         }
         return null;
       }
@@ -266,7 +299,7 @@
     { id: 'pillar-right', type: 'pillar', center: [12, 1, -6, 0], params: { r: 0.25, h: 2.5 }, material: 9 }
   ], true);
   global.Scene4 = Object.freeze({
-    types: types, library: library, create: create, gallery: gallery,
+    types: types, library: library, ray: ray, rayGLSL: rayGLSL, create: create, gallery: gallery,
     linked: create(gallery.objects.filter(function (o) {
       return ['floor', 'wall', 'treasure'].indexOf(o.id) >= 0;
     }), true)

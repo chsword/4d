@@ -5,11 +5,10 @@
  *   - 着色器编译 / 链接是否失败（直接查 COMPILE_STATUS / LINK_STATUS，
  *     不依赖应用自己的错误处理，否则失败会变成静默黑屏）
  *   - 有无运行时错误（onerror / unhandledrejection / console.error）
- *   - 画布是否真的画出了东西（颜色数与亮度标准差；纯色画面标准差为 0）
+ *   - 枚举全部画布；物体 ROI 与只留背景/文字的负对照不同
+ *   - 实际射线的材料/距离、动态 shape/size/floor 与独立解析值一致
  *
- * 其余测试都是纯 node 的数学与接线验证，没有一个像素被真正画出来过。
- * 这一条是唯一覆盖 GPU 路径的回归，所以 4D SDF ray marching 一旦写坏
- * （比如 GLSL 里混进非 ASCII、或对向量用了三目运算符），只有它能发现。
+ * Node 替身不执行 GPU；这里补充真实编译、像素和语义验证。
  *
  * 用法：node tools/verify-render.js [--require-browser]
  * 找不到浏览器时默认跳过并退出 0；加 --require-browser 则视为失败。
@@ -22,6 +21,8 @@ const { execFileSync, spawn } = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
 const REQUIRE_BROWSER = process.argv.includes('--require-browser');
+const ONLY = (process.argv.find((s) => s.startsWith('--only=')) || '').slice(7);
+if (ONLY && !['F10', 'F19'].includes(ONLY)) throw new Error('Unknown GPU check: ' + ONLY);
 
 /* swiftshader 软件渲染下 ray marching 很慢，而 --virtual-time-budget 只管
    虚拟时间、不限制真实时间。所以窗口要小（像素数少一个数量级），
@@ -66,7 +67,7 @@ if (!browser) {
 console.log('浏览器: ' + browser);
 
 /* 生成的页面必须和 index.html 同目录，相对的 js/ 路径才解析得到 */
-const page = path.join(ROOT, '.render-probe.html');
+const page = path.join(ROOT, '.render-probe-' + process.pid + '.html');
 const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
 const first = '<script src="js/m4.js"></script>';
 if (html.indexOf(first) < 0) { console.error('FAIL index.html 里找不到注入点 ' + first); process.exit(1); }
@@ -74,8 +75,8 @@ fs.writeFileSync(page, html.replace(first, '<script src="tools/render-probe.js">
 
 let report;
 try {
-  const dom = execFileSync(browser, FLAGS.concat(['file://' + page]),
-    { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
+  const dom = execFileSync(browser, FLAGS.concat(['file://' + page + (ONLY ? '?only=' + ONLY : '')]),
+    { encoding: 'utf8', timeout: 600000, maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
   const m = dom.match(/<title>([\s\S]*?)<\/title>/);
   if (!m) throw new Error('页面没有产出 title');
   const raw = decode(m[1]);
@@ -90,12 +91,27 @@ if (report.shaderFails.length) fails.push('着色器失败: ' + JSON.stringify(r
 if (report.errors.length) fails.push('运行时错误: ' + JSON.stringify(report.errors));
 
 const expected = (html.match(/class="tab[^"]*" data-view="/g) || []).length;
-if (report.tabCount !== expected) fails.push(`页签数 ${report.tabCount}，index.html 里是 ${expected}`);
+if (!ONLY && report.tabCount !== expected) fails.push(`页签数 ${report.tabCount}，index.html 里是 ${expected}`);
+if (!report.checks || !report.checks.length) fails.push('No semantic GPU checks ran');
+const checkCounts = ONLY === 'F10' ? { F10: 18 } : ONLY === 'F19' ? { F19: 10 } : { F10: 18, F15: 1, F19: 10 };
+for (const [id, count] of Object.entries(checkCounts)) {
+  if ((report.checks || []).filter((c) => c.name.startsWith(id + ' ')).length !== count) fails.push('Missing semantic checks: ' + id);
+}
+for (const check of report.checks || []) {
+  if (!check.ok) fails.push(check.name + ': ' + check.detail);
+}
 
 const pad = (s, n) => String(s).padEnd(n);
 console.log('\n' + pad('页签', 13) + pad('画布', 22) + pad('绘制调用', 11) +
   pad('颜色数', 8) + pad('亮度均值', 11) + '亮度标准差');
-for (const [name, v] of Object.entries(report.tabs)) {
+const canvases = { analogy: ['cv-analogy'], projection: ['cv-projection'], slice: ['cv-slice'],
+  physics: ['cv-physics'], linked: ['cv-linked', 'cv-linked-slice'], chirality: ['cv-chirality'], rings: ['cv-rings'] };
+if (!ONLY && JSON.stringify(Object.keys(report.tabs).sort()) !== JSON.stringify(Object.keys(canvases).sort())) {
+  fails.push('F15 missing tab reports');
+}
+for (const [name, values] of Object.entries(report.tabs)) {
+  if (JSON.stringify(values.map((v) => v.id)) !== JSON.stringify(canvases[name])) fails.push('F15 missing canvas: ' + name);
+  for (const v of values) {
   console.log(pad(name, 13) + pad(v.canvas, 22) + pad(v.drawCalls, 11) +
     pad(v.colors === undefined ? '-' : v.colors, 8) +
     pad(v.mean === undefined ? '-' : v.mean, 11) +
@@ -106,12 +122,23 @@ for (const [name, v] of Object.entries(report.tabs)) {
   // 纯色画面标准差为 0；给一个宽松但能抓住黑屏的下限
   else if (v.std < 3) fails.push(`${name}: 画面近乎纯色（标准差 ${v.std}），疑似黑屏`);
   else if (v.colors < 20) fails.push(`${name}: 颜色数仅 ${v.colors}，疑似未正常渲染`);
+  if (!['cv-slice', 'cv-physics', 'cv-linked-slice'].includes(v.id)) {
+    const regions = name === 'analogy' ? 4 : name === 'chirality' || name === 'rings' ? 2 : 1;
+    if (!v.geometryPixels || v.geometryPixels.length !== regions) fails.push('F15 missing object ROIs: ' + name);
+  }
+  if (v.geometryPixels) {
+    console.log('  object ROI pixels vs background/text negative control: ' + v.geometryPixels.map((x) => x.toFixed(1)).join(', '));
+    if (v.geometryPixels.some((n) => !Number.isFinite(n) || n < 40)) fails.push('F15 missing object geometry: ' + name + ' ' + v.geometryPixels);
+  }
   if (name === 'slice' && (!v.tutorialPixel || v.tutorialPixel[0] < v.tutorialPixel[1] * 1.3 ||
       v.tutorialPixel[0] < v.tutorialPixel[2] * 1.3)) fails.push('红球教程准星处没有真正渲染出红球');
+  }
 }
 
 console.log();
 if (fails.length) { fails.forEach((f) => console.error('FAIL ' + f)); process.exit(1); }
+console.log('PASS ' + report.checks.length + ' semantic GPU checks (F10/F15/F19)');
+if (ONLY || process.argv.includes('--probe-only')) process.exit(0);
 async function verifyLayouts() {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), '4d-layout-'));
   const proc = spawn(browser, [
