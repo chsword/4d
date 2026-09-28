@@ -72,6 +72,8 @@ test('盒子与实心超球惯性：解析值、对称、正定、逆矩阵', fu
     var inv = P.inverseInertia(I);
     for (var i = 0; i < 6; i++) {
       for (var j = 0; j < 6; j++) {
+        near(box[i * 6 + j], i === j ? [5, 10, 17, 13, 20, 25][i] : 0, 0, '全部盒子惯性解析项');
+        near(sphere[i * 6 + j], i === j ? 4 : 0, 0, '全部超球惯性解析项');
         near(I[i * 6 + j], I[j * 6 + i], 0, '对称');
         var s = 0;
         for (var k = 0; k < 6; k++) s += I[i * 6 + k] * inv[k * 6 + j];
@@ -184,6 +186,36 @@ test('三维退化：楔积、对易子、欧拉导数与标准叉积公式一�
   for (var i = 0; i < 2400; i++) body.step(1 / 240, 0);
   vectorNear([body.angularVelocity[2], body.angularVelocity[4], body.angularVelocity[5]], [0, 0, 0], 1e-14, '不凭空进入 w 平面');
   vectorNear(M4.col(body.orientation, 3), [0, 0, 0, 1], 1e-14, 'w 轴不动');
+});
+
+test('三维退化 120 秒逐点对照独立经典 Euler RK4 轨迹', function () {
+  var body = new RigidBody4({ mass: 3, halfSize: [1, 2, 3, 0], angularVelocity: [0.7, -0.4, 0, 0.9, 0, 0] });
+  var w = [0.9, 0.4, 0.7], maxError = 0;
+  function derivative(v) { return [5 * v[1] * v[2] / 13, -8 * v[2] * v[0] / 10, 3 * v[0] * v[1] / 5]; }
+  function shifted(v, d, h) { return v.map(function (x, i) { return x + h * d[i]; }); }
+  for (var step = 0; step < 28800; step++) {
+    body.step(1 / 240, 0);
+    for (var j = 0; j < 4; j++) {
+      var h = 1 / 960, a = derivative(w), b = derivative(shifted(w, a, h / 2));
+      var c = derivative(shifted(w, b, h / 2)), d = derivative(shifted(w, c, h));
+      w = w.map(function (x, i) { return x + h * (a[i] + 2 * b[i] + 2 * c[i] + d[i]) / 6; });
+    }
+    maxError = Math.max(maxError, difference([body.angularVelocity[3], -body.angularVelocity[1], body.angularVelocity[0]], w));
+    vectorNear([body.angularVelocity[2], body.angularVelocity[4], body.angularVelocity[5]], [0, 0, 0], 0, 'w 分量不泄漏');
+  }
+  assert(maxError < 1e-8, '120 s 独立 Euler 轨迹误差 ' + maxError);
+  console.log('  independent Euler max error=' + maxError.toExponential(3));
+});
+
+test('非等边盒子一般等倾双旋转 120 秒保持六分量 omega 恒定', function () {
+  var omega = P.transform([0.7, 0, 0, 0, 0, 0.7], rotation());
+  var body = asymmetricBody({ angularVelocity: omega }), maxError = 0;
+  for (var i = 0; i < 28800; i++) {
+    body.step(1 / 240, 0);
+    maxError = Math.max(maxError, difference(body.angularVelocity, omega));
+  }
+  assert(maxError < 1e-10, '非主平面等倾角速度漂移 ' + maxError);
+  console.log('  isoclinic max omega drift=' + maxError.toExponential(3));
 });
 
 test('碰撞有效质量包含四维角向贡献，与真实冲量响应一致', function () {

@@ -417,14 +417,14 @@ test('World4 collision wiring: no-floor two-body elastic impact, external force 
   var b = sphere({ position: [2, 0.3, 0.7, 1.1], velocity: [-2, 0, 0, 0] });
   world.bodies.push(a, b);
   var initial = momentum(world.bodies), before = energy(world.bodies);
-  for (var i = 0; i < 480; i++) world.step(1 / 240);
+  for (var i = 0; i < 480; i++) assert(world.step(1 / 240).advanced, 'collision trajectory must advance');
   assert(a.velocity[0] < 0 && b.velocity[0] > 0, 'must bounce through World4.step');
   vectorNear(momentum(world.bodies).linear, initial.linear, 1e-11, 'world linear');
   vectorNear(momentum(world.bodies).angular, initial.angular, 1e-11, 'world angular');
   near(energy(world.bodies), before, 1e-11, 'world energy');
   a.applyForce([1, 2, 3, 4]);
   var p0 = momentum(world.bodies).linear;
-  world.step(0.01);
+  assert(world.step(0.01).advanced, 'separated trajectory must advance');
   vectorNear(momentum(world.bodies).linear, M4.add(p0, [0.01, 0.02, 0.03, 0.04]), 1e-11, 'force applied once');
 });
 
@@ -441,7 +441,7 @@ test('200 seeded random two-body worlds over 3 seconds: finite, bounded, no resi
     world.bodies.push(body(-1, trial % 3 === 0), body(1, trial % 3 === 1));
     var before = energy(world.bodies), previous = before, touched = false;
     for (var step = 0; step < 720; step++) {
-      world.step(1 / 240);
+      assert(world.step(1 / 240).advanced, 'two-body trajectory must advance');
       var current = energy(world.bodies);
       worstEnergy = Math.max(worstEnergy, current - previous);
       assert(current <= previous + 1e-8, 'step energy increase trial ' + trial + ': ' + (current - previous));
@@ -479,7 +479,7 @@ test('40 random four-body worlds over 2 seconds: coupled contacts, no penetratio
     });
     var previous = energy(world.bodies);
     for (var step = 0; step < 480; step++) {
-      world.step(1 / 240);
+      assert(world.step(1 / 240).advanced, 'multibody trajectory must advance');
       var current = energy(world.bodies);
       assert(Number.isFinite(current) && current <= previous + 1e-8, 'multibody step energy gain');
       previous = current;
@@ -506,7 +506,7 @@ test('four-box stack settles for 8 seconds with coupled floor contacts, no sinki
   var maxPosition = 0, maxVelocity = 0, maxOmega = 0, maxDepth = 0;
   var E0 = world.bodies.reduce(function (s, b) { return s + b.mass * world.gravity * (b.position[1] - world.floorY); }, 0);
   for (var step = 0; step < 1920; step++) {
-    world.step(1 / 240);
+    assert(world.step(1 / 240).advanced, 'stack trajectory must advance');
     var E = energy(world.bodies) + world.bodies.reduce(function (s, b) {
       return s + b.mass * world.gravity * (b.position[1] - world.floorY);
     }, 0);
@@ -545,7 +545,7 @@ test('F16 rollback/subdivision preserves external impulses and retries instead o
       }
       return solve(w);
     };
-    try { world.step(dt); } finally { C.solveWorld = solve; }
+    try { assert(world.step(dt).advanced, 'subdivision really advances'); } finally { C.solveWorld = solve; }
     assert(calls === 3 && world._solverSubdivisions === 1, 'one failed full step plus two successful halves');
     vectorNear(a.velocity, force.map(function (f) { return f * dt / 2; }), 2e-14, 'external force exactly once');
     vectorNear(a.position, force.map(function (f) { return 0.75 * f * dt * dt / 2; }), 2e-14, 'retried half-step trajectory');
@@ -553,17 +553,117 @@ test('F16 rollback/subdivision preserves external impulses and retries instead o
     vectorNear(a.force, [0, 0, 0, 0], 0, 'force consumed only on success');
   });
 
-  test('F16 exhausted retries roll back every body and still throw explicitly', function () {
+  test('F16 exhausted retries roll back every body and report a skipped step explicitly', function () {
     var world = new P.World4({ gravity: 0, floor: false });
     world.bodies = [new RigidBody4(), new RigidBody4({ position: [10, 0, 0, 0] })];
     world.bodies[0].applyForce([1, 2, 3, 4]);
-    var before = JSON.stringify(world.bodies), solve = C.solveWorld, error;
+    var before = JSON.stringify(world.bodies), solve = C.solveWorld, result;
     C.solveWorld = function () { throw new P.ContactConvergenceError(0.01); };
-    try { world.step(0.04); } catch (e) { error = e; } finally { C.solveWorld = solve; }
-    assert(error instanceof P.ContactConvergenceError && error.residual === 0.01, 'failure is not success-shaped');
+    try { result = world.step(0.04); } finally { C.solveWorld = solve; }
+    assert(!result.advanced && result.advancedTime === 0 && result.reason === 'convergence' &&
+      result.residual === 0.01 && world.skippedSteps === 1, 'failure is not success-shaped');
     assert(world._solverSubdivisions === 8, 'bounded retry tree');
     assert(JSON.stringify(world.bodies) === before, 'complete transactional rollback including forces');
   });
+
+test('F16 shared work and retry budgets roll back, do not cache a partial budget, and never swallow other errors', function () {
+  var world = new P.World4({ gravity: 0, floor: false });
+  world.bodies = [new RigidBody4(), new RigidBody4({ position: [10, 0, 0, 0] })];
+  world.bodies[0].applyForce([1, 2, 3, 4]);
+  world.bodies[0].applyTorque([1, 2, 3, 4, 5, 6]);
+  var before = JSON.stringify(world.bodies), solve = C.solveWorld, calls = 0;
+  C.solveWorld = function (w) {
+    calls++;
+    w.bodies[0].velocity[0] = 12345;
+    w._stepBudget.spend(P.STEP_WORK_LIMIT);
+  };
+  try {
+    var result = world.step(0.004);
+    assert(!result.advanced && result.reason === 'budget', 'work exhaustion is explicit, not convergence');
+    assert(result.work <= P.STEP_WORK_LIMIT && result.attempts === 1, 'work limit includes failed attempt');
+    assert(JSON.stringify(world.bodies) === before, 'all state and external forces restored');
+    world.step(0.004);
+    assert(calls === 1 && world.stepResult.cached && world.stepResult.work === 0, 'no expensive identical retry');
+    world.bodies[0].force[0]++;
+    world.step(0.004);
+    assert(calls === 2 && !world.stepResult.cached, 'force input invalidates failure cache');
+    world.resetDiagnostics();
+    var budget = new P.StepBudget();
+    budget.spend(P.STEP_WORK_LIMIT - 1);
+    world.step(0.004, budget);
+    assert(!world._failedStep, 'partial display-frame budget cannot blacklist a full-budget step');
+    world.step(0.004);
+    assert(world._failedStep && calls === 3, 'fresh next frame gets a real attempt');
+    world.resetDiagnostics();
+    before = JSON.stringify(world.bodies);
+    C.solveWorld = function () { throw new Error('unexpected implementation bug'); };
+    var error;
+    try { world.step(0.004); } catch (e) { error = e; }
+    assert(error && error.message === 'unexpected implementation bug', 'unexpected failures remain fatal');
+    assert(JSON.stringify(world.bodies) === before && !world._stepBudget && !world.stepResult,
+      'unexpected failures still roll back and leave no success result');
+  } finally { C.solveWorld = solve; }
+});
+
+test('F16 retry tree has a global attempt limit even when many left halves succeed', function () {
+  var world = new P.World4({ gravity: 0, floor: false });
+  world.bodies = [new RigidBody4({ velocity: [1, 0, 0, 0] }), new RigidBody4({ position: [10, 0, 0, 0] })];
+  var before = JSON.stringify(world.bodies), solve = C.solveWorld, calls = 0, trialDt;
+  var bodyStep = world.bodies[0].step;
+  world.bodies[0].step = function (dt, gravity, budget) {
+    trialDt = dt;
+    return bodyStep.call(this, dt, gravity, budget);
+  };
+  C.solveWorld = function () {
+    calls++;
+    if (trialDt > 0.004 / 32) throw new P.ContactConvergenceError(0.01);
+  };
+  try {
+    var result = world.step(0.004);
+    assert(!result.advanced && result.reason === 'budget' && result.attempts === P.STEP_ATTEMPT_LIMIT &&
+      calls === P.STEP_ATTEMPT_LIMIT, 'entire retry tree is bounded, not just its depth');
+    assert(JSON.stringify(world.bodies) === before, 'successful left halves never partially commit');
+  } finally { C.solveWorld = solve; }
+});
+
+test('F16 wall-clock deadline rolls back and a transient timeout expires instead of disabling physics', function () {
+  var world = new P.World4({ gravity: 0, floor: false });
+  world.bodies = [new RigidBody4({ velocity: [1, 0, 0, 0] })];
+  var before = JSON.stringify(world.bodies), budget = new P.StepBudget();
+  budget.deadline = performance.now() - 1;
+  var result = world.step(0.004, budget);
+  assert(!result.advanced && result.reason === 'time' && result.work === 0, 'expired deadline stops at first work checkpoint');
+  assert(JSON.stringify(world.bodies) === before, 'timed-out integration is rolled back');
+  assert(Number.isFinite(world._failedStep.expires), 'timeout is not permanent failure memoization');
+  world.step(0.004);
+  assert(world.stepResult.cached && !world.stepResult.advanced, 'short cooldown does not pretend to advance');
+  world._failedStep.expires = 0;
+  world.step(0.004);
+  assert(world.stepResult.advanced && world.bodies[0].position[0] === 0.004, 'later frame retries and advances');
+  world.resetDiagnostics();
+  assert(!world._failedStep && !world.stepResult && world.skippedSteps === 0, 'reset clears deadline degradation');
+});
+
+test('F16 named geometry convergence failures skip safely but residuals above 1e-12 are never accepted', function () {
+  var world = new P.World4({ gravity: 0, floor: false });
+  world.bodies = [new RigidBody4(), new RigidBody4({ position: [10, 0, 0, 0] })];
+  var before = JSON.stringify(world.bodies), solve = C.solveWorld, contacts = P.solveContacts;
+  C.solveWorld = function (w) {
+    w.bodies[0].position[0] = 1000;
+    throw new C.ConvergenceError('injected GJK iteration exhaustion');
+  };
+  try {
+    var result = world.step(0.004);
+    assert(!result.advanced && result.reason === 'convergence', 'geometry solver failure is not fatal');
+    assert(JSON.stringify(world.bodies) === before, 'geometry failure restores whole step');
+    C.solveWorld = solve;
+    world.resetDiagnostics();
+    P.solveContacts = function () { return { change: 1.00001e-12 }; };
+    result = world.step(0.004);
+    assert(!result.advanced && result.residual === 1.00001e-12, 'even just above 1e-12 remains rejected');
+    assert(JSON.stringify(world.bodies) === before, 'rejected residual cannot commit');
+  } finally { C.solveWorld = solve; P.solveContacts = contacts; }
+});
 
 test('six-body demo, classic script order and rendering uniforms/SDF are wired without shader regressions', function () {
   require('../js/scene4.js');
@@ -607,7 +707,7 @@ test('six-body demo, classic script order and rendering uniforms/SDF are wired w
     [0, 0.45].forEach(function (restitution) {
       view.world.restitution = restitution;
       view.resetScene();
-      for (var step = 0; step < 1440; step++) view.world.step(1 / 240);
+      for (var step = 0; step < 1440; step++) assert(view.world.step(1 / 240).advanced, 'rendered demo must advance');
       view.draw();
       assert(uploaded.uCount === 6, 'upload count matches active bodies');
       near(uploaded.uFloor, view.world.floorY, 0, 'F19 floor uniform');
@@ -638,9 +738,9 @@ require('../js/view-physics.js');
       test('F16 default six bodies 10 seconds e=' + e + ' mu=' + mu + ' dt=1/' + hz, function () {
         var view = { maxBodies: 8, world: new P.World4({ restitution: e, friction: mu }) };
         PhysicsView.prototype.resetScene.call(view);
-        var solve = P.solveContacts, continuations = 0, subdivisions = 0;
-        P.solveContacts = function (contacts, friction, iterations) {
-          var result = solve(contacts, friction, iterations);
+        var solve = P.solveContacts, continuations = 0, subdivisions = 0, maxStepMs = 0;
+        P.solveContacts = function (contacts, friction, iterations, budget) {
+          var result = solve(contacts, friction, iterations, budget);
           assert(result.change <= 1e-12, 'strict fixed-point residual');
           contacts.forEach(function (c) {
             assert(normalVelocity(c) >= -1e-10,
@@ -651,7 +751,10 @@ require('../js/view-physics.js');
         };
         try {
           for (var step = 0; step < 10 * hz; step++) {
-            view.world.step(1 / hz);
+            var start = performance.now(), result = view.world.step(1 / hz);
+            maxStepMs = Math.max(maxStepMs, performance.now() - start);
+            assert(result.advanced && view.world.skippedSteps === 0, 'common region must never skip: ' +
+              JSON.stringify({ step: step, elapsedMs: performance.now() - start, result: result }));
             subdivisions += view.world._solverSubdivisions;
             view.world.bodies.forEach(function (b) {
               assert(b.position.concat(b.velocity, b.angularVelocity, b.orientation).every(Number.isFinite),
@@ -660,7 +763,7 @@ require('../js/view-physics.js');
             });
           }
         } finally { P.solveContacts = solve; }
-        console.log('  continuations=' + continuations + ', subdivisions=' + subdivisions);
+        console.log('  continuations=' + continuations + ', subdivisions=' + subdivisions + ', skipped=0, maxStepMs=' + maxStepMs);
       });
     });
   });

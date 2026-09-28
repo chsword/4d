@@ -306,6 +306,7 @@
     document.getElementById('physics-spawn').addEventListener('click', function () { ph.spawn(); });
     document.getElementById('physics-reset').addEventListener('click', function () {
       resetView(ph, function () { ph.resetScene(); });
+      document.getElementById('physics-status').textContent = ph.solverWarning;
     });
     document.getElementById('physics-camera').addEventListener('click', function () { ph.resetCamera(); });
     document.getElementById('physics-w').addEventListener('input', function () { ph.cam[3] = parseFloat(this.value); });
@@ -480,10 +481,13 @@
         ' &nbsp;|&nbsp; zw = ' + (v.a_zw * 57.2958).toFixed(0) + '°' +
         ' &nbsp;|&nbsp; xyz = (' + v.cam[0].toFixed(1) + ', ' + v.cam[1].toFixed(1) + ', ' + v.cam[2].toFixed(1) + ')' +
         (current === 'physics' ? ' &nbsp;|&nbsp; 刚体 ' + ph.world.bodies.length + '/' + ph.maxBodies +
-          (ph.paused ? ' · 已暂停' : '') : '') +
+          (ph.paused ? ' · 已暂停' : '') +
+          (ph.skippedFrames ? '<br>已跳过 ' + ph.skippedFrames + ' 帧 / ' + ph.skippedTime.toFixed(3) +
+            ' 秒 · ' + ph.solverWarning : '') : '') +
         (v.locked ? '' : ' &nbsp;·&nbsp; <span class="hint">' + (v.pointerError || '点画面锁定鼠标') + '</span>');
       var ws = document.getElementById(current === 'physics' ? 'physics-w' : 'wslider');
       if (document.activeElement !== ws) ws.value = v.cam[3];
+      if (current === 'physics') document.getElementById('physics-status').textContent = ph.solverWarning;
     } else {
       hud.style.display = 'none';
     }

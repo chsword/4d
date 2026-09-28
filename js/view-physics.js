@@ -70,8 +70,10 @@
     this.keys = {};
     this._rPressedAt = null;
     this._rTurning = false;
-    this.world._collisionContacts = [];
-    this.world._solverResult = null;
+    this.world.resetDiagnostics();
+    this.skippedFrames = 0;
+    this.skippedTime = 0;
+    this.solverWarning = '';
     this.world.bodies = [
       new RigidBody4({
         halfSize: [0.55, 0.8, 0.45, 1.05], position: [-2, 1.2, -8, 0],
@@ -166,8 +168,22 @@
     if (this.paused) { this.accumulator = 0; return; }
     // 固定物理步长不随帧率变化；隐藏页签和窗口失焦时不积攒补算债务。
     this.accumulator += Math.min(dt, 0.05);
+    var budget = new Physics4.StepBudget();
     while (this.accumulator + 1e-12 >= this.timeStep) {
-      this.world.step(this.timeStep);
+      var result = this.world.step(this.timeStep, budget);
+      if (!result.advanced) {
+        this.skippedFrames++;
+        this.skippedTime += this.accumulator;
+        this.solverWarning = result.cached
+          ? (result.reason === 'time' ? '求解暂缓，保留上次有效状态；稍后自动重试，相机和控件仍可用。' :
+            '求解仍未推进，保留上次有效状态。可调整参数、投掷物体或重置；相机和控件仍可用。')
+          : (result.reason === 'time' ? '这一帧求解超时' :
+            result.reason === 'budget' ? '这一帧求解器在工作预算内未收敛' : '这一帧求解器未收敛') +
+            '，该步已回滚，本帧余下时间已跳过。后续帧继续运行。';
+        this.accumulator = 0;
+        break;
+      }
+      if (this.skippedFrames) this.solverWarning = '求解已恢复；此前跳过的时间未补算。';
       this.accumulator = Math.max(0, this.accumulator - this.timeStep);
     }
   };

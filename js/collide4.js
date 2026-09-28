@@ -115,7 +115,7 @@
       if (simplex.length >= 5) throw new Error('GJK retained a non-containing 4-simplex');
       simplex.push(vertex);
     }
-    throw new Error('GJK did not converge in 256 iterations');
+    throw new ConvergenceError('GJK did not converge in 256 iterations');
   }
 
   function det3(m) {
@@ -291,6 +291,7 @@
     // Split position correction: mass-weighting preserves the COM and total
     // uniform-gravity potential for pair corrections, without a velocity bias.
     for (var pass = 0; pass < 256; pass++) {
+      if (world._stepBudget) world._stepBudget.spend(pairs.length + floorOffsets.length);
       maxDepth = 0;
       for (i = 0; i < pairs.length; i++) {
         var pair = pairs[i], a = pair.a, b = pair.b;
@@ -317,7 +318,7 @@
       }
       if (maxDepth <= 1e-11) break;
     }
-    if (maxDepth > 1e-8) throw new Error('Pair position correction did not converge: ' + maxDepth);
+    if (maxDepth > 1e-8) throw new ConvergenceError('Pair position correction did not converge: ' + maxDepth);
     var contacts = [];
     for (i = 0; i < bodies.length; i++) {
       for (j = i + 1; j < bodies.length; j++) {
@@ -358,14 +359,23 @@
         if (c.other) c.other.applyImpulse(M4.scale(impulse, -1), c.rOther);
       });
     }
-    var result = Physics4.solveContacts(contacts, world.friction, 2048);
+    var result = Physics4.solveContacts(contacts, world.friction, 2048, world._stepBudget);
     if (result.change > 1e-12) throw new Physics4.ContactConvergenceError(result.change);
     world._solverResult = result;
     world._collisionContacts = world.restitution === 0 ? contacts : [];
     return result;
   }
 
+  function ConvergenceError(message) {
+    this.name = 'CollisionConvergenceError';
+    this.message = message;
+    if (Error.captureStackTrace) Error.captureStackTrace(this, ConvergenceError);
+  }
+  ConvergenceError.prototype = Object.create(Error.prototype);
+  ConvergenceError.prototype.constructor = ConvergenceError;
+
   global.Collide4 = {
+    ConvergenceError: ConvergenceError,
     support: support, gjk: gjk, cross4: cross4, satAxes: satAxes, sat: sat,
     collide: collide, vertices: vertices, broadPhase: broadPhase,
     pairContacts: pairContacts, solveWorld: solveWorld

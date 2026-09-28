@@ -205,7 +205,7 @@
     return R.map(function (x, i) { return x + dR[i] * h; });
   }
 
-  RigidBody4.prototype.step = function (dt, gravity) {
+  RigidBody4.prototype.step = function (dt, gravity, stepBudget) {
     if (!Number.isFinite(dt) || dt < 0) throw new Error('时间步长必须为有限非负数');
     if (gravity === undefined) gravity = 9.81;
     if (!Number.isFinite(gravity) || gravity < 0) throw new Error('重力必须为有限非负数');
@@ -233,6 +233,7 @@
     var count = Math.max(1, Math.ceil(dt * Math.sqrt(dot6(omega, omega)) / 0.05));
     var h = dt / count;
     for (var s = 0; s < count; s++) {
+      if (stepBudget) stepBudget.spend(1);
       var R = this.orientation;
       var a = derivative(R), b = derivative(shifted(R, a, h / 2));
       var c = derivative(shifted(R, b, h / 2)), d = derivative(shifted(R, c, h));
@@ -305,7 +306,7 @@
         }
       }
     });
-    solveContacts(contacts, friction);
+    solveContacts(contacts, friction, undefined, o._stepBudget);
     return true;
   }
 
@@ -327,14 +328,21 @@
   }
 
   function mappedVelocity(map) {
-    var v = map.body.velocity.slice(), omega = map.body.angularVelocity;
-    for (var i = 0; i < 4; i++) for (var k = 0; k < 6; k++) v[i] += map.J[i * 6 + k] * omega[k];
+    var v = map.body.velocity.slice(), omega = map.body.angularVelocity, J = map.J;
+    for (var i = 0; i < 4; i++) {
+      var j = i * 6;
+      v[i] = v[i] + J[j] * omega[0] + J[j + 1] * omega[1] + J[j + 2] * omega[2] +
+        J[j + 3] * omega[3] + J[j + 4] * omega[4] + J[j + 5] * omega[5];
+    }
     return v;
   }
 
   function contactVelocity(contact) {
-    var maps = contact._solverPoints;
-    if (maps && maps.every(function (m) { return m.orientation === m.body.orientation; })) {
+    var maps = contact._solverPoints, valid = !!maps;
+    if (maps) for (var i = 0; i < maps.length; i++) {
+      if (maps[i].orientation !== maps[i].body.orientation) valid = false;
+    }
+    if (valid) {
       var velocity = mappedVelocity(maps[0]);
       return maps.length === 2 ? M4.sub(velocity, mappedVelocity(maps[1])) : velocity;
     }
@@ -344,15 +352,17 @@
 
   function contactImpulse(contact, impulse) {
     if (contact._solverPoints) {
-      contact._solverPoints.forEach(function (map, index) {
+      for (var index = 0; index < contact._solverPoints.length; index++) {
+        var map = contact._solverPoints[index];
         var body = map.body, sign = index ? -1 : 1;
         for (var i = 0; i < 4; i++) body.velocity[i] += sign * impulse[i] * body.invMass;
         for (var k = 0; k < 6; k++) {
-          var dw = 0;
-          for (i = 0; i < 4; i++) dw += map.response[k * 4 + i] * impulse[i];
+          var j = k * 4, response = map.response;
+          var dw = 0 + response[j] * impulse[0] + response[j + 1] * impulse[1] +
+            response[j + 2] * impulse[2] + response[j + 3] * impulse[3];
           body.angularVelocity[k] += sign * dw;
         }
-      });
+      }
       return;
     }
     contact.body.applyImpulse(impulse, contact.r);
@@ -373,7 +383,27 @@
   ContactConvergenceError.prototype = Object.create(Error.prototype);
   ContactConvergenceError.prototype.constructor = ContactConvergenceError;
 
-  function solveContacts(contacts, friction, iterations) {
+  var STEP_WORK_LIMIT = 300000, STEP_ATTEMPT_LIMIT = 32, STEP_TIME_LIMIT_MS = 750;
+
+  function StepBudget() {
+    this.work = 0;
+    this.attempts = 0;
+    this.deadline = performance.now() + STEP_TIME_LIMIT_MS;
+  }
+  StepBudget.prototype.spend = function (work) {
+    if (performance.now() >= this.deadline) throw new StepBudgetError('time');
+    if (this.work + work > STEP_WORK_LIMIT) throw new StepBudgetError('work');
+    this.work += work;
+  };
+  function StepBudgetError(reason) {
+    this.name = 'StepBudgetError';
+    this.message = 'Physics step work budget exhausted';
+    this.reason = reason || 'work';
+  }
+  StepBudgetError.prototype = Object.create(Error.prototype);
+  StepBudgetError.prototype.constructor = StepBudgetError;
+
+  function solveContacts(contacts, friction, iterations, stepBudget) {
     var pairs = contacts.some(function (c) { return c.other; });
     var strict = iterations !== undefined || pairs, budget = iterations === undefined ? (pairs ? 2048 : 32) : iterations;
     var total = 0, continuations = 0, rounds = 0;
@@ -399,7 +429,7 @@
     function converge(mu) {
       var result, previous = Infinity, count = 0, batch = budget;
       do {
-        result = iterateContacts(contacts, mu, batch);
+        result = iterateContacts(contacts, mu, batch, stepBudget);
         total += result.iterations;
         count += result.iterations;
         if (!strict || result.change <= 1e-12) return result;
@@ -440,16 +470,22 @@
     return { iterations: total, change: result.change, continuations: continuations, impactRounds: rounds };
   }
 
-  function tangentUpdate(contact, friction, nextNormal) {
-    var normal = contact.normal || NORMAL, vt = contactVelocity(contact);
-    vt = M4.sub(vt, M4.scale(normal, M4.dot(vt, normal)));
+  function tangentUpdate(contact, friction, nextNormal, velocity) {
+    var normal = contact.normal || NORMAL, vt = velocity || contactVelocity(contact);
+    var vn = M4.dot(vt, normal);
+    for (var i = 0; i < 4; i++) vt[i] -= normal[i] * vn;
     var speed = M4.len(vt), next = contact.tangentImpulse.slice();
     if (speed > 0 && friction > 0) {
       var mass = contact.tangentMass || contactMass(contact, M4.scale(vt, 1 / speed));
-      next = M4.sub(next, M4.scale(vt, 1 / mass));
+      var inverse = 1 / mass;
+      for (i = 0; i < 4; i++) next[i] -= vt[i] * inverse;
     }
     var magnitude = M4.len(next), limit = friction * (nextNormal + (contact.impactImpulse || 0));
-    return magnitude > limit ? M4.scale(next, limit / magnitude) : next;
+    if (magnitude > limit) {
+      var ratio = limit / magnitude;
+      for (i = 0; i < 4; i++) next[i] *= ratio;
+    }
+    return next;
   }
 
   function contactResidual(contacts, friction) {
@@ -464,8 +500,12 @@
   }
 
   function impulseVector(contacts) {
-    var out = [];
-    contacts.forEach(function (c) { out.push(c.normalImpulse); out.push.apply(out, c.tangentImpulse); });
+    var out = new Array(5 * contacts.length);
+    for (var i = 0; i < contacts.length; i++) {
+      var c = contacts[i], j = 5 * i;
+      out[j] = c.normalImpulse;
+      for (var k = 0; k < 4; k++) out[j + 1 + k] = c.tangentImpulse[k];
+    }
     return out;
   }
 
@@ -542,23 +582,27 @@
     }
   }
 
-  function iterateContacts(contacts, friction, iterations) {
-    var residual = 0, history = [];
+  function iterateContacts(contacts, friction, iterations, stepBudget) {
+    var residual = 0, history = [], impulse = [0, 0, 0, 0];
     for (var pass = 0; pass < iterations; pass++) {
+      if (stepBudget) stepBudget.spend(contacts.length);
       var change = 0, previous = friction > 0 && iterations > 32 ? impulseVector(contacts) : null;
       for (var i = 0; i < contacts.length; i++) {
         var contact = contacts[i], normal = contact.normal || NORMAL;
-        var vn = M4.dot(contactVelocity(contact), normal);
+        var velocity = contactVelocity(contact), vn = M4.dot(velocity, normal);
         var target = contact.target === undefined ? 0 : contact.target;
         var nextNormal = Math.max(0, contact.normalImpulse + (target - vn) / contact.normalMass);
         var deltaNormal = nextNormal - contact.normalImpulse;
-        contactImpulse(contact, M4.scale(normal, deltaNormal));
+        if (deltaNormal !== 0) {
+          for (var axis = 0; axis < 4; axis++) impulse[axis] = normal[axis] * deltaNormal;
+          contactImpulse(contact, impulse);
+        }
         contact.normalImpulse = nextNormal;
-        var nextTangent = tangentUpdate(contact, friction, nextNormal);
-        var deltaTangent = M4.sub(nextTangent, contact.tangentImpulse);
-        contactImpulse(contact, deltaTangent);
+        var nextTangent = tangentUpdate(contact, friction, nextNormal, deltaNormal === 0 ? velocity : null);
+        for (axis = 0; axis < 4; axis++) impulse[axis] = nextTangent[axis] - contact.tangentImpulse[axis];
+        if (impulse[0] !== 0 || impulse[1] !== 0 || impulse[2] !== 0 || impulse[3] !== 0) contactImpulse(contact, impulse);
         contact.tangentImpulse = nextTangent;
-        change = Math.max(change, Math.abs(deltaNormal), M4.len(deltaTangent));
+        change = Math.max(change, Math.abs(deltaNormal), M4.len(impulse));
       }
       if (previous) {
         var current = impulseVector(contacts);
@@ -583,13 +627,24 @@
     this.friction = o.friction === undefined ? 0.6 : o.friction;
     this.floorY = o.floorY === undefined ? -1.5 : o.floorY;
     this.floorEnabled = o.floor !== false;
+    this.resetDiagnostics();
   }
+
+  World4.prototype.resetDiagnostics = function () {
+    this._collisionContacts = [];
+    this._solverResult = null;
+    this._solverSubdivisions = 0;
+    this._stepBudget = null;
+    this._failedStep = null;
+    this.stepResult = null;
+    this.skippedSteps = 0;
+  };
 
   function integrateWorld(dt) {
     for (var i = 0; i < this.bodies.length; i++) {
       var body = this.bodies[i];
       if (!this.floorEnabled) {
-        body.step(dt, this.gravity);
+        body.step(dt, this.gravity, this._stepBudget);
         continue;
       }
       var gap = floorContacts(body, this.floorY).separation;
@@ -601,7 +656,7 @@
           force: body.force.slice(), torque: body.torque.slice()
         };
       }
-      body.step(dt, this.gravity);
+      body.step(dt, this.gravity, this._stepBudget);
       if (saved && floorContacts(body, this.floorY).depth > 0) {
         /* 悬空落地时若走完整步再抬回地面，弹性反弹会获得额外势能。
            在同一个半隐式离散轨迹上二分落地时刻，再积分余下时间；
@@ -611,17 +666,17 @@
         for (var j = 0; j < 32; j++) {
           restoreBody(body, saved);
           var mid = (lo + hi) / 2;
-          body.step(mid, this.gravity);
+          body.step(mid, this.gravity, this._stepBudget);
           if (floorContacts(body, this.floorY).depth > 0) hi = mid;
           else lo = mid;
         }
         restoreBody(body, saved);
-        body.step(hi, this.gravity);
+        body.step(hi, this.gravity, this._stepBudget);
         collideFloor(body, this);
         if (dt > hi) {
           body.force = saved.force.slice();
           body.torque = saved.torque.slice();
-          body.step(dt - hi, this.gravity);
+          body.step(dt - hi, this.gravity, this._stepBudget);
         }
       }
       collideFloor(body, this);
@@ -640,6 +695,8 @@
   function advanceWorld(world, dt, depth) {
     var saved = world.bodies.map(snapshot), contacts = world._collisionContacts, result = world._solverResult;
     try {
+      if (world._stepBudget.attempts >= STEP_ATTEMPT_LIMIT) throw new StepBudgetError();
+      world._stepBudget.attempts++;
       integrateWorld.call(world, dt);
     } catch (error) {
       world.bodies.forEach(function (body, i) { restoreBody(body, saved[i]); });
@@ -663,11 +720,49 @@
     }
   }
 
-  World4.prototype.step = function (dt) {
+  World4.prototype.step = function (dt, frameBudget) {
     if (!Number.isFinite(dt) || dt < 0) throw new Error('时间步长必须为有限非负数');
     this._solverSubdivisions = 0;
-    advanceWorld(this, dt, 0);
+    var failed = this._failedStep;
+    // A rolled-back state is identical on the next frame. Do not repeatedly
+    // spend the entire budget on the same deterministic failed calculation.
+    // Any physics input (including force/torque), body or cache change retries.
+    if (failed && performance.now() < failed.expires && failed.key === stepKey(this, dt) &&
+        failed.bodies.every(function (body, i) { return body === this.bodies[i]; }, this) &&
+        failed.contacts === this._collisionContacts && failed.solver === (global.Collide4 && global.Collide4.solveWorld)) {
+      this.skippedSteps++;
+      this.stepResult = Object.assign({}, failed.result, { cached: true, work: 0, attempts: 0 });
+      return this.stepResult;
+    }
+    this._failedStep = null;
+    var budget = this._stepBudget = frameBudget || new StepBudget(), initialWork = budget.work;
+    this.stepResult = null;
+    try {
+      advanceWorld(this, dt, 0);
+      this.stepResult = { advanced: true, advancedTime: dt, work: budget.work, attempts: budget.attempts };
+    } catch (error) {
+      var collisionFailure = global.Collide4 && typeof global.Collide4.ConvergenceError === 'function' &&
+        error instanceof global.Collide4.ConvergenceError;
+      if (!(error instanceof ContactConvergenceError) && !(error instanceof StepBudgetError) && !collisionFailure) throw error;
+      this.skippedSteps++;
+      this.stepResult = { advanced: false, advancedTime: 0,
+        reason: error instanceof StepBudgetError ? (error.reason === 'time' ? 'time' : 'budget') : 'convergence',
+        residual: error.residual, work: budget.work, attempts: budget.attempts, cached: false };
+      if (initialWork === 0 || error instanceof ContactConvergenceError || collisionFailure) {
+        this._failedStep = { key: stepKey(this, dt), bodies: this.bodies.slice(), contacts: this._collisionContacts,
+          solver: global.Collide4 && global.Collide4.solveWorld, result: this.stepResult,
+          expires: this.stepResult.reason === 'time' ? performance.now() + 1000 : Infinity };
+      }
+    } finally {
+      this._stepBudget = null;
+    }
+    return this.stepResult;
   };
+
+  function stepKey(world, dt) {
+    return JSON.stringify([dt, world.gravity, world.restitution, world.friction,
+      world.floorY, world.floorEnabled, world.bodies, world._collisionContacts]);
+  }
 
   function restoreBody(body, saved) {
     Object.keys(saved).forEach(function (key) { body[key] = saved[key].slice(); });
@@ -681,6 +776,8 @@
     effectiveMass: effectiveMass, floorContacts: floorContacts, collideFloor: collideFloor,
     contactVelocity: contactVelocity, contactMass: contactMass, solveContacts: solveContacts,
     ContactConvergenceError: ContactConvergenceError,
+    StepBudget: StepBudget, STEP_WORK_LIMIT: STEP_WORK_LIMIT, STEP_ATTEMPT_LIMIT: STEP_ATTEMPT_LIMIT,
+    STEP_TIME_LIMIT_MS: STEP_TIME_LIMIT_MS,
     RigidBody4: RigidBody4, World4: World4
   };
   global.RigidBody4 = RigidBody4;

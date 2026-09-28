@@ -187,8 +187,14 @@
   }
   function geometryPixels(cv, view, name) {
     var ctx = getCtx.call(cv, '2d'), before = ctx.getImageData(0, 0, cv.width, cv.height).data;
-    negativeCanvas = cv;
-    try { view.draw(); } finally { negativeCanvas = null; }
+    if (name === 'linked') {
+      // Same pose and all the same helpers, labels and reference lines; remove
+      // only object outlines/sections, so helpers cannot supply object pixels.
+      view.drawOverview(view.snapshot(), true);
+    } else {
+      negativeCanvas = cv;
+      try { view.draw(); } finally { negativeCanvas = null; }
+    }
     var after = ctx.getImageData(0, 0, cv.width, cv.height).data;
     var W = cv.clientWidth, H = cv.clientHeight;
     // Object regions exclude titles, legends and lower diagnostic charts.

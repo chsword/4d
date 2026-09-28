@@ -88,7 +88,7 @@
     var slider = document.getElementById('linked-w');
     if (document.activeElement !== slider) slider.value = state.camera[3];
   };
-  LinkedView.prototype.drawOverview = function (state) {
+  LinkedView.prototype.drawOverview = function (state, omitObjects) {
     var ctx = this.ctx, cv = this.canvas, W = cv.width, H = cv.height;
     var dpi = W / (cv.clientWidth || W), S = Math.min(W, H) * 0.36;
     var pivot = this.objects[0].center, R = M4.rotation('xw', 1.05);
@@ -126,15 +126,21 @@
     ctx.fillStyle = '#0a0c14'; ctx.fillRect(0, 0, W, H);
     ctx.font = 11 * dpi + 'px ui-monospace, monospace';
     var colors = ['#8c92a6', '#ffd633'];
-    this.meshes.forEach(function (mesh, i) { lines(mesh, colors[i], 1, 0.32); });
+    if (!omitObjects) this.meshes.forEach(function (mesh, i) { lines(mesh, colors[i], 1, 0.32); });
     ctx.setLineDash([5 * dpi, 4 * dpi]);
     lines(state.window, '#6ee7ff', 1, 0.6);
     ctx.setLineDash([]);
     var self = this;
     state.sections.forEach(function (mesh, i) {
       var selected = self.objects[i].id === self.selected;
-      lines(mesh, selected ? '#6ee7ff' : colors[i], selected ? 2.5 : 1.8, 1);
-      if (mesh.verts.length === 1) point(mesh.verts[0], colors[i], '相切点', 3);
+      if (!omitObjects) {
+        lines(mesh, selected ? '#6ee7ff' : colors[i], selected ? 2.5 : 1.8, 1);
+        if (mesh.verts.length === 1) point(mesh.verts[0], colors[i], '', 3);
+      }
+      if (mesh.verts.length === 1) {
+        var tangent = project(mesh.verts[0]);
+        if (tangent) { ctx.fillStyle = colors[i]; ctx.fillText('相切点', tangent[0] + 7 * dpi, tangent[1] - 7 * dpi); }
+      }
       point(self.objects[i].center, colors[i], self.objects[i].id + (mesh.verts.length ? ' ∩ H' : ' · 无截面'), 2);
     });
     var names = ['Ax', 'Ay', 'Az', 'Aw'], axisColors = ['#fa7777', '#8ce8a8', '#83adff', '#e69bff'];

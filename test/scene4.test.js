@@ -661,7 +661,7 @@ test('F16/F03 runtime failures are isolated and explicit resets resume physics a
   env.Physics4.World4.prototype.step = function () { throw new Error('injected convergence failure'); };
   frame();
   assert(n.fatal.style.display === 'block', 'failure is visible');
-  env.Physics4.World4.prototype.step = function (dt) { steps++; step.call(this, dt); };
+  env.Physics4.World4.prototype.step = function (dt, budget) { steps++; return step.call(this, dt, budget); };
   frame(); assert(steps === 0, 'failed physics stays stopped until explicit reset');
   select('projection'); frame(); assert(n.fatal.style.display === 'none', 'other tab remains usable');
   select('physics'); assert(n.fatal.style.display === 'block', 'error stays on affected tab');
@@ -678,6 +678,57 @@ test('F16/F03 runtime failures are isolated and explicit resets resume physics a
   env.emit('keydown', { code: 'KeyW', target: { tagName: 'BODY' }, preventDefault: function () {} });
   frame(); assert(n['cv-slice'].gl.uniforms.uCam[2] < 0, 'movement resumes after reset');
   assert(b.errors.length === 2, 'only explicitly injected errors');
+});
+
+test('F16 solver degradation keeps real app frames, camera and reset alive without fatal errors', function () {
+  var b = browser(), env = b.env, n = b.nodes, time = 0, view, calls = 0;
+  var draw = env.PhysicsView.prototype.draw, solve = env.Collide4.solveWorld;
+  env.PhysicsView.prototype.draw = function () { view = this; return draw.call(this); };
+  env.Collide4.solveWorld = function () {
+    calls++;
+    throw new env.Physics4.ContactConvergenceError(0.01);
+  };
+  b.tabs.find(function (t) { return t.dataset.view === 'physics'; }).emit('click');
+  env.tick(time += 50);
+  assert(view.skippedFrames === 1 && view.world.skippedSteps === 1, 'one skipped frame, no catch-up loop');
+  assert(!view.error && n.fatal.style.display === 'none', 'convergence is not fatal');
+  assert(n['physics-status'].textContent.includes('该步已回滚') && n.hud.innerHTML.includes('已跳过 1 帧'),
+    'honest visible warning and counter');
+  var before = JSON.stringify(view.world.bodies), cam = view.cam.slice(), firstCalls = calls;
+  env.emit('keydown', { code: 'KeyE', target: { tagName: 'BODY' }, preventDefault: function () {} });
+  env.tick(time += 50);
+  assert(view.skippedFrames === 2 && calls === firstCalls, 'identical failed input does not burn budget again');
+  assert(JSON.stringify(view.world.bodies) === before && view.cam[3] > cam[3], 'physics rolled back, camera still moves');
+  assert(n['physics-status'].textContent.includes('仍未推进'), 'repeated failure is not called progress');
+  n['physics-friction'].value = '1.5'; n['physics-friction'].emit('input');
+  env.tick(time += 50);
+  assert(calls > firstCalls, 'changed parameter invalidates failed-state cache');
+  env.Collide4.solveWorld = solve;
+  env.tick(time += 50);
+  assert(view.world.stepResult.advanced && n['physics-status'].textContent.includes('已恢复'),
+    'later successful frame advances without reset');
+  n['physics-reset'].emit('click');
+  assert(!view.error && view.accumulator === 0 && view.skippedFrames === 0 && view.skippedTime === 0 &&
+    view.solverWarning === '' && view.world.skippedSteps === 0 && !view.world._failedStep &&
+    view.world.stepResult === null && !view.world._solverResult && view.world._collisionContacts.length === 0 &&
+    n['physics-status'].textContent === '', 'reset removes all degradation and old contacts immediately');
+  env.tick(time += 50);
+  assert(!n.hud.innerHTML.includes('已跳过') && !view.error && b.errors.length === 0, 'reset resumes a clean app');
+});
+
+test('F16 all fixed steps in one display frame share one budget and skip the catch-up remainder', function () {
+  var b = browser(), env = b.env, view, calls = 0;
+  var draw = env.PhysicsView.prototype.draw;
+  env.PhysicsView.prototype.draw = function () { view = this; return draw.call(this); };
+  env.Collide4.solveWorld = function (w) { calls++; w._stepBudget.spend(160000); };
+  b.tabs.find(function (t) { return t.dataset.view === 'physics'; }).emit('click');
+  env.tick(50);
+  assert(calls === 2 && view.skippedFrames === 1 && view.accumulator === 0, 'do not restart budget for each catch-up step');
+  assert(view.world.stepResult.work <= env.Physics4.STEP_WORK_LIMIT, 'display frame obeys the shared ceiling');
+  assert(!view.world._failedStep, 'partial frame budget must not disable the next full-budget attempt');
+  env.tick(100);
+  assert(calls === 4 && view.skippedFrames === 2 && !view.error && b.errors.length === 0,
+    'next display frame really runs again');
 });
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');

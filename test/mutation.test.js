@@ -14,13 +14,14 @@ let passed = 0, failed = 0;
 
 function git(args) { return execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' }); }
 function snapshot(dir, baseline) {
-  const files = baseline ? git(['ls-tree', '-r', '--name-only', BASE]).trim().split('\n')
+  const ref = baseline === true ? BASE : baseline;
+  const files = baseline ? git(['ls-tree', '-r', '--name-only', ref]).trim().split('\n')
     : git(['ls-files', '--cached', '--others', '--exclude-standard']).trim().split('\n');
   for (const file of files) {
     if (!/^(js\/|test\/|tools\/|proto\/|index\.html$)/.test(file) || !/\.(js|html|css)$/.test(file)) continue;
     const target = path.join(dir, file);
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, baseline ? git(['show', BASE + ':' + file]) : fs.readFileSync(path.join(ROOT, file)));
+    fs.writeFileSync(target, baseline ? git(['show', ref + ':' + file]) : fs.readFileSync(path.join(ROOT, file)));
   }
 }
 function replace(dir, file, before, after) {
@@ -93,6 +94,19 @@ const cases = [
     args: ['tools/verify-render.js', '--require-browser', '--probe-only'], evidence: /F15 missing object geometry: projection/,
     mutate(dir) { return replace(dir, 'js/view-projection.js',
       'var verts = this.shape.verts, edges = this.shape.edges;', 'var verts = [], edges = [];'); } },
+  { id: 'F15', name: 'linked overview retains helpers but no object outlines or sections',
+    baseline: '9b86967',
+    oldArgs: ['tools/verify-render.js', '--require-browser', '--probe-only'],
+    args: ['tools/verify-render.js', '--require-browser', '--probe-only'], evidence: /F15 missing object geometry: linked/,
+    mutate(dir, old) {
+      var undoOutlines = replace(dir, 'js/view-linked.js',
+        (old ? '' : 'if (!omitObjects) ') + 'this.meshes.forEach(function (mesh, i) { lines(mesh, colors[i], 1, 0.32); });', '');
+      var undoSections = replace(dir, 'js/view-linked.js',
+        "lines(mesh, selected ? '#6ee7ff' : colors[i], selected ? 2.5 : 1.8, 1);", '');
+      var undoTangent = replace(dir, 'js/view-linked.js',
+        "if (mesh.verts.length === 1) point(mesh.verts[0], colors[i], '" + (old ? '相切点' : '') + "', 3);", '');
+      return function () { undoTangent(); undoSections(); undoOutlines(); };
+    } },
   { id: 'F19', name: 'all glomes uploaded as boxes',
     oldArgs: ['test/collide4.test.js', 'six-body demo'], args: ['test/collide4.test.js', 'six-body demo'], evidence: /F19 shape uniform/,
     mutate(dir) { return replace(dir, 'js/view-physics.js',
@@ -125,16 +139,22 @@ const cases = [
 try {
   const before = path.join(temp, 'before'), after = path.join(temp, 'after');
   snapshot(before, true); snapshot(after, false);
-  const controls = new Set();
+  const controls = new Set(), baselines = new Map([[BASE, before]]);
   for (const c of cases.filter((c) => !filter || c.id.includes(filter))) {
     try {
       console.log('RUN ' + c.id + ' | ' + c.name);
-      for (const [dir, args] of [[before, c.oldArgs], [after, c.args]]) {
+      const ref = c.baseline || BASE;
+      if (!baselines.has(ref)) {
+        const dir = path.join(temp, ref);
+        snapshot(dir, ref); baselines.set(ref, dir);
+      }
+      const old = baselines.get(ref);
+      for (const [dir, args] of [[old, c.oldArgs], [after, c.args]]) {
         const key = dir + JSON.stringify(args);
         if (!controls.has(key)) { success(run(dir, args), 'Unmutated positive control failed'); controls.add(key); }
       }
-      let undo = c.mutate(before, true);
-      try { success(run(before, c.oldArgs), 'Baseline did not let this mutation survive'); } finally { undo(); }
+      let undo = c.mutate(old, true);
+      try { success(run(old, c.oldArgs), 'Baseline did not let this mutation survive'); } finally { undo(); }
       undo = c.mutate(after, false);
       try { killed(run(after, c.args), c.evidence); } finally { undo(); }
       passed++; console.log('PASS ' + c.id + ' | ' + c.name + ' | before: SURVIVED | after: KILLED');

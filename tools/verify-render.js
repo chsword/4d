@@ -127,7 +127,8 @@ for (const [name, values] of Object.entries(report.tabs)) {
     if (!v.geometryPixels || v.geometryPixels.length !== regions) fails.push('F15 missing object ROIs: ' + name);
   }
   if (v.geometryPixels) {
-    console.log('  object ROI pixels vs background/text negative control: ' + v.geometryPixels.map((x) => x.toFixed(1)).join(', '));
+    console.log('  object ROI pixels vs ' + (name === 'linked' ? 'helpers-only' : 'background/text') +
+      ' negative control: ' + v.geometryPixels.map((x) => x.toFixed(1)).join(', '));
     if (v.geometryPixels.some((n) => !Number.isFinite(n) || n < 40)) fails.push('F15 missing object geometry: ' + name + ' ' + v.geometryPixels);
   }
   if (name === 'slice' && (!v.tutorialPixel || v.tutorialPixel[0] < v.tutorialPixel[1] * 1.3 ||
