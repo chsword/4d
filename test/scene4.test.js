@@ -470,8 +470,8 @@ function browser() {
   env.document.querySelectorAll = function (selector) {
     if (selector === '.tab') return tabs;
     if (selector === '.panel') return panels;
-    assert(selector === '[id^="ch-"]' || selector === '[id^="rg-"]', 'supported DOM selector');
-    var prefix = selector === '[id^="ch-"]' ? 'ch-' : 'rg-';
+    assert(['[id^="ch-"]', '[id^="rg-"]', '[id^="nt-"]'].includes(selector), 'supported DOM selector');
+    var prefix = selector.slice(6, 9);
     return Object.keys(nodes).filter(function (id) { return id.indexOf(prefix) === 0; }).map(function (id) { return nodes[id]; });
   };
   vm.createContext(env);
@@ -518,8 +518,8 @@ test('application wiring: linked movement, sliders, tab cleanup, resize and fram
   near(gl.uniforms.uCam[0], 0, 1e-12, 'switch clears held input');
   env.innerWidth = 600; env.emit('resize');
   assert(nodes['cv-linked-slice'].style.left === '0' && nodes['cv-linked-slice'].style.top === '350px', 'stacked on narrow screen');
-  assert(b.tabs.length === 7 && b.tabs[5].dataset.view === 'chirality' && b.tabs[6].dataset.view === 'rings',
-    'chirality remains sixth; rings is seventh');
+  assert(b.tabs.length === 8 && b.tabs[5].dataset.view === 'chirality' && b.tabs[6].dataset.view === 'rings' &&
+    b.tabs[7].dataset.view === 'net', 'chirality remains sixth; rings seventh; net eighth');
   select('chirality'); frame(1);
   assert(nodes['cv-chirality'].classList.contains('active') && !nodes['cv-linked'].classList.contains('active'), 'isolated sixth canvas');
   nodes['ch-best'].emit('click'); frame(1);
@@ -558,6 +558,26 @@ test('application wiring: linked movement, sliders, tab cleanup, resize and fram
   var ringTime = nodes['rg-time-val'].textContent;
   select('projection'); frame(1); select('rings'); frame(1);
   assert(nodes['rg-time-val'].textContent === ringTime, 'tab switch pauses rings');
+  select('net'); frame(1);
+  assert(nodes['cv-net'].classList.contains('active') && !nodes['cv-rings'].classList.contains('active'), 'isolated eighth canvas');
+  nodes['nt-cell'].value = '7'; nodes['nt-cell'].emit('change');
+  nodes['nt-middle'].emit('click'); frame(1);
+  assert(nodes['nt-identity'].textContent.indexOf('8 H') === 0, 'material identity survives folding');
+  assert(nodes['nt-angles'].textContent === 'θ=90.00° · φ=0.00°', 'exact phase boundary');
+  assert(nodes['nt-joined'].textContent.indexOf('新接合 12/17') >= 0, 'only five lid seams remain open');
+  nodes['nt-end'].emit('click'); frame(1);
+  assert(nodes['nt-joined'].textContent.indexOf('新接合 17/17') >= 0, 'all new faces join');
+  assert(nodes['nt-status'].textContent.indexOf('48 张胞面逐一配成 24 对') >= 0, 'visible per-face closure evidence');
+  var material = nodes['nt-point'].textContent;
+  nodes['nt-mode'].value = 'ortho'; nodes['nt-mode'].emit('change'); frame(1);
+  assert(nodes['nt-point'].textContent === material, 'camera cannot change material points');
+  nodes['nt-home'].emit('click'); frame(1);
+  assert(nodes['nt-identity'].textContent.indexOf('1 A') === 0, 'find the original cell without resetting time');
+  assert(nodes['nt-time-val'].textContent === '100.0%', 'identity selection does not unfold');
+  nodes['nt-start'].emit('click'); nodes['nt-play'].emit('click'); frame(2);
+  var netTime = nodes['nt-time-val'].textContent;
+  select('projection'); frame(1); select('net'); frame(1);
+  assert(nodes['nt-time-val'].textContent === netTime, 'tab switch pauses net');
   assert(b.errors.length === 0, 'no runtime failures during live frames');
 });
 

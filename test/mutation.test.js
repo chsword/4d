@@ -49,6 +49,28 @@ function killed(result, evidence) {
 }
 const gpu = (id) => ['tools/verify-render.js', '--require-browser', '--only=' + id];
 const cases = [
+  ...[
+    { name: 'hinge replaced by endpoint lerp', selector: 'NET rigidity', evidence: /NET rigid pair/,
+      before: 'c = Math.cos(angle), s = Math.sin(angle)',
+      after: 'c = 1 - Math.abs(angle) / (Math.PI / 2), s = angle / (Math.PI / 2)' },
+    { name: 'cell C uses wrong hinge axis', selector: 'NET schedule', evidence: /NET side hinge axis/,
+      before: 'return hinge(p, cell.axis, cell.sign,',
+      after: 'return hinge(p, index === 2 ? 1 : cell.axis, cell.sign,' },
+    { name: 'parent-child transformations reversed', selector: 'NET schedule', evidence: /NET parent-child order/,
+      before: 'return hinge(hinge(p, 1, 3, angles.phi), 1, 1, angles.theta);',
+      after: 'return hinge(hinge(p, 1, 1, angles.theta), 1, 3, angles.phi);',
+      oldBefore: 'p = hinge(p, 1, 3, phi);\n      return hinge(p, 1, 1, theta);',
+      oldAfter: 'p = hinge(p, 1, 1, theta);\n      return hinge(p, 1, 3, phi);' }
+  ].map(c => ({
+    id: 'NET', name: c.name, baseline: 'fa7a844',
+    // 基线只有未被旧数学测试覆盖的内联原型；诚实记录这个覆盖缺口，
+    // 不为“修复前”捏造弱化版 net 测试，也不把新模块偷偷塞进历史快照。
+    oldArgs: ['test/math4.test.js'], args: ['test/net4.test.js', c.selector], evidence: c.evidence,
+    mutate(dir, old) {
+      return replace(dir, old ? 'proto/tesseract-net.html' : 'js/net4.js',
+        old && c.oldBefore ? c.oldBefore : c.before, old && c.oldAfter ? c.oldAfter : c.after);
+    }
+  })),
   { id: 'F10', name: 'GLSL hit epsilon x100',
     oldArgs: ['test/scene4.test.js'], args: gpu('F10'), evidence: /F10 GPU analytic ray/,
     mutate(dir, old) {

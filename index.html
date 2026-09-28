@@ -136,6 +136,23 @@
   [data-view=rings] select { min-width: 0; max-width: 100%; }
   [data-view=rings] :focus-visible { outline: 2px solid var(--warn); outline-offset: 2px; }
   #rg-status, #rg-contact { color: var(--warn); }
+  #stage.net { min-height: 900px; }
+  #stage #cv-net { touch-action: pan-y; }
+  #net-evidence {
+    display: none; position: absolute; top: 12px; left: 12px; right: 12px;
+    grid-template-columns: 1fr 1fr; gap: 6px 12px; pointer-events: none; font-size: 11px;
+  }
+  #stage.net #net-evidence { display: grid; }
+  #net-evidence > div { background: var(--panel); border: 1px solid var(--line); padding: 6px 8px; color: var(--dim); min-width: 0; }
+  #net-evidence output { display: block; color: var(--fg); font: 12px/1.5 ui-monospace, monospace; white-space: pre-line; overflow-wrap: anywhere; }
+  #net-evidence #nt-joined, #nt-status { color: var(--warn); }
+  [data-view=net] fieldset { min-width: 0; }
+  [data-view=net] .btns { flex-wrap: wrap; }
+  [data-view=net] select { min-width: 0; max-width: 100%; }
+  [data-view=net] :focus-visible { outline: 2px solid var(--warn); outline-offset: 2px; }
+  #nt-point { display: block; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 ui-monospace, monospace; }
+  #nt-pairs { width: 100%; border-collapse: collapse; font-size: 11px; }
+  #nt-pairs td, #nt-pairs th { border-bottom: 1px solid var(--line); padding: 4px 2px; text-align: left; }
   a { color: var(--accent); }
 </style>
 </head>
@@ -152,6 +169,7 @@
     <button class="tab" data-view="linked">⑤ 投影＋切片联动</button>
     <button class="tab" data-view="chirality">⑥ 手性翻转</button>
     <button class="tab" data-view="rings">⑦ 刚性双环分离</button>
+    <button class="tab" data-view="net">⑧ 超立方体八胞折叠</button>
   </nav>
 </header>
 
@@ -167,6 +185,13 @@
     <canvas id="cv-linked-slice" aria-label="共享场景的第一人称切片"></canvas>
     <canvas id="cv-chirality" aria-label="带材料点标号的左右手匹配：三维对照、四维路径、xw 轨迹及 yzw 补充投影"></canvas>
     <canvas id="cv-rings" aria-label="刚性双环：三维接触对照、四维分离、最近材料点的 xw 尺与连续距离下界"></canvas>
+    <canvas id="cv-net" aria-label="八个固定编号立方体的四维刚性折叠、胞内材料点、本地尺及逐面接缝残差"></canvas>
+    <div id="net-evidence">
+      <div>固定材料身份<output id="nt-identity"></output></div>
+      <div>两阶段进度<output id="nt-angles"></output></div>
+      <div>完整四维刚体读数<output id="nt-rigid"></output></div>
+      <div>逐面配对进度<output id="nt-joined"></output></div>
+    </div>
     <div id="rings-evidence">
       <div>当前四维中心线最小距离<output id="rg-distance"></output></div>
       <div>当前解析下界（不是采样）<output id="rg-bound"></output></div>
@@ -579,6 +604,69 @@
         <a href="docs/intuition-research.md">A02 路径与边界</a>
       </div>
     </section>
+    <!-- ================= 八胞折叠 ================= -->
+    <section class="panel" data-view="net">
+      <h2>⑧ 超立方体八胞折叠</h2>
+      <p id="nt-note">立方体的六个正方形绕<b>线</b>铰链折起；升一维后，
+        八个同尺寸立方体绕<b>二维正方形面</b>铰链折起。这里展开的是四维体的三维边界。</p>
+      <fieldset>
+        <legend>先认一块胞，再跟着折</legend>
+        <div class="row"><label for="nt-cell">胞的身份</label><select id="nt-cell"></select></div>
+        <div class="btns"><button id="nt-home" type="button">找回最初的 1 A 胞</button></div>
+        <p>编号 1–8 / A–H 和颜色从不重分配。只给选中胞轻填色；其余胞仅作定位参照。</p>
+        <div class="row"><label for="nt-time">折叠进度</label>
+          <input id="nt-time" type="range" min="0" max="1" step="0.001" value="0">
+          <output id="nt-time-val" class="val">0%</output></div>
+        <div class="btns">
+          <button id="nt-play" type="button">播放一次</button>
+          <button id="nt-start" type="button">展开</button>
+          <button id="nt-middle" type="button">六侧折好</button>
+          <button id="nt-end" type="button">闭合</button>
+        </div>
+        <p>播放在两阶段交界停一次，再点继续合盖；滑块可倒放。
+          θ=(π/2)min(2t,1)，φ=(π/2)max(2t−1,0)。不做顶点线性插值。</p>
+      </fieldset>
+      <p id="nt-status" role="status" aria-live="polite"></p>
+      <fieldset>
+        <legend>当前两份正方形 · 哪块接哪块</legend>
+        <label for="nt-seam">本地面 x± / y± / z±</label>
+        <select id="nt-seam" aria-label="选择一对终态接合面"></select>
+        <p>白实线和黄虚线标出两份面；它们的四对材料角点固定配对，不按当前最近点重新匹配。
+          下方尺测四维残差，接近零表示相接，不是屏幕上看起来重合。</p>
+        <details>
+          <summary>全部 24 对面 · 当前最大角点残差</summary>
+          <table id="nt-pairs"><thead><tr><th>胞:本地面</th><th>性质</th><th>残差</th></tr></thead><tbody></tbody></table>
+        </details>
+      </fieldset>
+      <fieldset>
+        <legend>相机不是折叠</legend>
+        <div class="row"><label for="nt-mode">4D→3D</label><select id="nt-mode">
+          <option value="perspective">受控透视（默认）</option>
+          <option value="ortho">正交丢 w（重叠对照）</option>
+        </select></div>
+        <div class="row"><label for="nt-yaw">水平角</label><input id="nt-yaw" type="range" min="-180" max="180" step="0.1" value="34.3775"></div>
+        <div class="row"><label for="nt-pitch">俯仰角</label><input id="nt-pitch" type="range" min="-65" max="65" step="0.1" value="-20.0535"></div>
+        <p><b>四维透视不保尺寸。</b>固定比例 7/(8−w)，没有自动缩放；再用三维正交相机观察。
+          终态 A/H 像“盒中盒”，其实八胞全等。正交丢 w 会让这两个对胞重叠。</p>
+      </fieldset>
+      <p><b>这整个实心立方体才是一块胞。</b>六张外壳只是画法，P/Q 位于胞的三维内部；
+        下方本地图不是切片，也不是第二台四维相机。</p>
+      <output id="nt-point" aria-label="所选胞材料点的完整四维坐标"></output>
+      <div class="note"><b>八胞的三维体积之和不是超立方体的四维超体积。</b>
+        展开的是边界，不是四维内部；不能把八块体积相加当作四维体积。</div>
+      <details>
+        <summary>为什么无穿透、无敞缝？</summary>
+        <p>第一段侧胞满足 s·pₐ≥1，其它轴的侧胞不越出该坐标的 [−1,1]；
+          H 随 E 向外延伸。第二段 H 在 w=2+r cosφ≥2，而六侧胞在 w≤2。
+          最终二维面相接是预期粘合，三维相对内部仍不交；投影线框交叉不构成反例。</p>
+        <p>终态对每个胞的六张面按完整四维顶点集合逐一配对，48 张面恰好分成 24 对，
+          每对来自两个不同胞；7 对是原来的铰链，17 对是新接缝。
+          每棱归 3 胞、每顶点归 4 胞。16−32+24−8=0 只是辅助校验，不是单独的闭合证明。</p>
+        <p>终态八胞分别是 w=0、w=2、x=±1、y=±1、z=±1 的完整立方体，
+          并集正好为 ∂([−1,1]³×[0,2])。计算保留浮点残差，不吸附顶点来制造闭合。</p>
+        <p><a href="docs/intuition-research.md">A03 推导与取舍</a></p>
+      </details>
+    </section>
   </aside>
 </main>
 
@@ -590,6 +678,7 @@
 <script src="js/scene4.js"></script>
 <script src="js/chirality4.js"></script>
 <script src="js/rings4.js"></script>
+<script src="js/net4.js"></script>
 <script src="js/view-projection.js"></script>
 <script src="js/view-slice.js"></script>
 <script src="js/view-linked.js"></script>
@@ -597,6 +686,7 @@
 <script src="js/view-physics.js"></script>
 <script src="js/view-chirality.js"></script>
 <script src="js/view-rings.js"></script>
+<script src="js/view-net.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

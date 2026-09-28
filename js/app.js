@@ -11,7 +11,8 @@
     linked: document.getElementById('cv-linked'),
     linkedSlice: document.getElementById('cv-linked-slice'),
     chirality: document.getElementById('cv-chirality'),
-    rings: document.getElementById('cv-rings')
+    rings: document.getElementById('cv-rings'),
+    net: document.getElementById('cv-net')
   };
   var views = {};
   var current = 'analogy';
@@ -81,12 +82,18 @@
     views.rings = { error: '双环视图初始化失败：' + err.message };
     console.error(err);
   }
+  try {
+    views.net = new NetView(canvases.net);
+  } catch (err) {
+    views.net = { error: '八胞折叠初始化失败：' + err.message };
+    console.error(err);
+  }
 
   /* 切片视图是逐像素 ray marching：每个像素要求几十次四维距离场，
      按 devicePixelRatio 全分辨率渲染在集显上会掉到个位数帧率。
      线框那两个视图是 Canvas 2D，反而需要高 dpr 才不毛糙。 */
   var SCALE = { projection: dpr, analogy: dpr, slice: Math.min(dpr, 1), physics: Math.min(dpr, 1),
-    linked: dpr, linkedSlice: Math.min(dpr, 1), chirality: dpr, rings: dpr };
+    linked: dpr, linkedSlice: Math.min(dpr, 1), chirality: dpr, rings: dpr, net: dpr };
 
   function resize() {
     stage.style.minHeight = '';
@@ -102,6 +109,10 @@
     }
     if (current === 'rings' && r.width < 700) {
       stage.style.minHeight = '1420px';
+      r = stage.getBoundingClientRect();
+    }
+    if (current === 'net' && r.width < 680) {
+      stage.style.minHeight = '1300px';
       r = stage.getBoundingClientRect();
     }
     for (var k in canvases) {
@@ -126,6 +137,7 @@
     if (views.physics && views.physics.clearInput && !views.physics.error) views.physics.clearInput();
     if (views.chirality && !views.chirality.error) views.chirality.clearInput();
     if (views.rings && !views.rings.error) views.rings.clearInput();
+    if (views.net && !views.net.error) views.net.clearInput();
     current = name;
     for (var k in canvases) {
       canvases[k].classList.toggle('active', k === name || (name === 'linked' && k === 'linkedSlice'));
@@ -143,6 +155,7 @@
     stage.classList.toggle('linked', name === 'linked');
     stage.classList.toggle('chirality', name === 'chirality');
     stage.classList.toggle('rings', name === 'rings');
+    stage.classList.toggle('net', name === 'net');
     resize();
     showViewError();
   }
@@ -435,6 +448,73 @@
     };
   } else if (rg && rg.error) {
     document.getElementById('rg-note').textContent = rg.error;
+  }
+
+  /* ---------- 八胞：控件只改进度/观察方向，不改材料坐标 ---------- */
+  var nt = views.net;
+  if (nt && !nt.error) {
+    var ne = {};
+    Array.prototype.forEach.call(document.querySelectorAll('[id^="nt-"]'), function (el) { ne[el.id.slice(3)] = el; });
+    Net4.cells.forEach(function (cell, i) {
+      var option = document.createElement('option');
+      option.value = i; option.textContent = (i + 1) + ' ' + cell.id + ' · 终态 ' + cell.fixed;
+      ne.cell.appendChild(option);
+    });
+    var seamRows = nt.seams.map(function (seam, i) {
+      var label = nt.seamLabel(seam), option = document.createElement('option');
+      option.value = i; option.textContent = label + (seam.retained ? ' · 铰链' : ' · 新接缝');
+      ne.seam.appendChild(option);
+      var row = ne.pairs.querySelector('tbody').insertRow();
+      row.insertCell().textContent = label;
+      row.insertCell().textContent = seam.retained ? '保留' : '新接';
+      return row.insertCell();
+    });
+    ne.time.addEventListener('input', function () { nt.seek(Number(this.value)); });
+    ne.start.addEventListener('click', function () { nt.seek(0); });
+    ne.middle.addEventListener('click', function () { nt.seek(0.5); });
+    ne.end.addEventListener('click', function () { nt.seek(1); });
+    ne.play.addEventListener('click', function () {
+      if (nt.t === 1) nt.seek(0);
+      nt.playing = !nt.playing;
+    });
+    ne.cell.addEventListener('change', function () { nt.selectCell(Number(this.value)); });
+    ne.home.addEventListener('click', function () { nt.selectCell(0); });
+    ne.seam.addEventListener('change', function () {
+      nt.seam = Number(this.value);
+      var seam = nt.seams[nt.seam];
+      if (nt.selected !== seam.a.cell && nt.selected !== seam.b.cell) nt.selectCell(seam.a.cell);
+    });
+    ne.mode.addEventListener('change', function () { nt.mode = this.value; });
+    ne.yaw.addEventListener('input', function () { nt.camYaw = Number(this.value) * Math.PI / 180; });
+    ne.pitch.addEventListener('input', function () { nt.camPitch = Number(this.value) * Math.PI / 180; });
+    document.addEventListener('visibilitychange', function () { if (document.hidden) nt.clearInput(); });
+    function netText(id, value) { if (ne[id].textContent !== value) ne[id].textContent = value; }
+    nt.onUpdate = function (s) {
+      var g = s.geometry, cell = Net4.cells[nt.selected], retained = 0, joined = 0;
+      g.gaps.forEach(function (gap, i) {
+        var max = Math.max.apply(Math, gap), closed = max <= Net4.tolerance;
+        if (closed) { if (nt.seams[i].retained) retained++; else joined++; }
+        var value = max.toExponential(2) + (closed ? ' 合' : ' 开');
+        if (seamRows[i].textContent !== value) seamRows[i].textContent = value;
+      });
+      ne.time.value = nt.t; ne.cell.value = nt.selected; ne.seam.value = nt.seam;
+      netText('time-val', (100 * nt.t).toFixed(1) + '%');
+      netText('play', nt.playing ? '暂停' : nt.t === 0.5 ? '继续合盖' : '播放一次');
+      netText('angles', 'θ=' + (s.angles.theta * 180 / Math.PI).toFixed(2) + '° · φ=' +
+        (s.angles.phi * 180 / Math.PI).toFixed(2) + '°');
+      netText('identity', (nt.selected + 1) + ' ' + cell.id + ' · 终态 ' + cell.fixed + '\nP/Q 始终属于这块胞');
+      netText('rigid', '全部 224 点对 Δmax=' + g.drift.toExponential(2) + '\n|PQ|₄=' + s.distance.toFixed(12));
+      netText('joined', '铰链 ' + retained + '/7 · 新接合 ' + joined + '/17\n未接合 ' + (24 - g.joined) + ' 对');
+      netText('point', s.points.map(function (p, i) {
+        return Net4.markers[i].id + '=(' + p.map(function (v) { return v.toFixed(4); }).join(', ') + ')';
+      }).join('\n'));
+      netText('status', nt.t === 0 ? '展开：八个三维立方体都在 w=0；保留 7 张铰链面，另有 17 对面待接。'
+        : nt.t < 0.5 ? '阶段一：六侧胞外翻；H 由 E 带动。整张正方形是铰链，不是某一条棱。'
+          : nt.t < 1 ? '六侧胞已折好；H 从 w≥2 的外侧合盖。相接是面粘合，不是胞内部穿透。'
+            : '闭合：48 张胞面逐一配成 24 对，无敞口；32 棱各归 3 胞，16 顶点各归 4 胞。');
+    };
+  } else if (nt && nt.error) {
+    document.getElementById('nt-note').textContent = nt.error;
   }
 
   /* ---------- 类比视图控件 ---------- */

@@ -93,7 +93,7 @@ if (report.errors.length) fails.push('运行时错误: ' + JSON.stringify(report
 const expected = (html.match(/class="tab[^"]*" data-view="/g) || []).length;
 if (!ONLY && report.tabCount !== expected) fails.push(`页签数 ${report.tabCount}，index.html 里是 ${expected}`);
 if (!report.checks || !report.checks.length) fails.push('No semantic GPU checks ran');
-const checkCounts = ONLY === 'F10' ? { F10: 18 } : ONLY === 'F19' ? { F19: 10 } : { F10: 18, F15: 1, F19: 10 };
+const checkCounts = ONLY === 'F10' ? { F10: 18 } : ONLY === 'F19' ? { F19: 10 } : { F10: 18, F15: 1, F19: 10, NET: 5 };
 for (const [id, count] of Object.entries(checkCounts)) {
   if ((report.checks || []).filter((c) => c.name.startsWith(id + ' ')).length !== count) fails.push('Missing semantic checks: ' + id);
 }
@@ -105,7 +105,7 @@ const pad = (s, n) => String(s).padEnd(n);
 console.log('\n' + pad('页签', 13) + pad('画布', 22) + pad('绘制调用', 11) +
   pad('颜色数', 8) + pad('亮度均值', 11) + '亮度标准差');
 const canvases = { analogy: ['cv-analogy'], projection: ['cv-projection'], slice: ['cv-slice'],
-  physics: ['cv-physics'], linked: ['cv-linked', 'cv-linked-slice'], chirality: ['cv-chirality'], rings: ['cv-rings'] };
+  physics: ['cv-physics'], linked: ['cv-linked', 'cv-linked-slice'], chirality: ['cv-chirality'], rings: ['cv-rings'], net: ['cv-net'] };
 if (!ONLY && JSON.stringify(Object.keys(report.tabs).sort()) !== JSON.stringify(Object.keys(canvases).sort())) {
   fails.push('F15 missing tab reports');
 }
@@ -123,7 +123,7 @@ for (const [name, values] of Object.entries(report.tabs)) {
   else if (v.std < 3) fails.push(`${name}: 画面近乎纯色（标准差 ${v.std}），疑似黑屏`);
   else if (v.colors < 20) fails.push(`${name}: 颜色数仅 ${v.colors}，疑似未正常渲染`);
   if (!['cv-slice', 'cv-physics', 'cv-linked-slice'].includes(v.id)) {
-    const regions = name === 'analogy' ? 4 : name === 'chirality' || name === 'rings' ? 2 : 1;
+    const regions = name === 'analogy' ? 4 : ['chirality', 'rings', 'net'].includes(name) ? 2 : 1;
     if (!v.geometryPixels || v.geometryPixels.length !== regions) fails.push('F15 missing object ROIs: ' + name);
   }
   if (v.geometryPixels) {
@@ -138,7 +138,7 @@ for (const [name, values] of Object.entries(report.tabs)) {
 
 console.log();
 if (fails.length) { fails.forEach((f) => console.error('FAIL ' + f)); process.exit(1); }
-console.log('PASS ' + report.checks.length + ' semantic GPU checks (F10/F15/F19)');
+console.log('PASS ' + report.checks.length + ' semantic GPU/interaction checks (F10/F15/F19/NET)');
 if (ONLY || process.argv.includes('--probe-only')) process.exit(0);
 async function verifyLayouts() {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), '4d-layout-'));
@@ -221,11 +221,22 @@ async function verifyLayouts() {
           touch: getComputedStyle(a).touchAction, ...layoutProbe[a.id] };
         document.querySelector('.tab[data-view="projection"]').click();
         await frame();
+        const drawNet = NetView.prototype.draw;
+        let netView;
+        NetView.prototype.draw = function() { netView = this; return drawNet.apply(this, arguments); };
+        document.querySelector('.tab[data-view="net"]').click();
+        await frame();
+        const netCanvas = document.getElementById('cv-net').getBoundingClientRect();
+        const evidence = document.getElementById('net-evidence').getBoundingClientRect();
+        const net = { rects: netView.rects, evidenceBottom: evidence.bottom - netCanvas.top,
+          touch: getComputedStyle(document.getElementById('cv-net')).touchAction };
         return { analogy, projection: layoutProbe['cv-projection'], viewport: innerWidth,
-          overflow: document.documentElement.scrollWidth > innerWidth };
+          net, overflow: document.documentElement.scrollWidth > innerWidth };
       })()` }, sessionId);
       if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
       const value = result.result.value, a = value.analogy, p = value.projection;
+      if (value.net.evidenceBottom > value.net.rects[0].y || value.net.rects[0].h < 300 ||
+          value.net.touch !== 'pan-y') throw new Error('Net evidence overlaps geometry or insufficient mobile room: ' + JSON.stringify(value.net));
       if (value.viewport !== width || value.overflow) throw new Error('Wrong/overflowing viewport: ' + JSON.stringify(value));
       if (!a.fonts.length || !p.fonts.length || Math.min(...a.fonts, ...p.fonts) < 12 - 1e-9) {
         throw new Error('Unreadable CSS text at ' + width + '/DPR' + dpr);

@@ -199,7 +199,7 @@
     var W = cv.clientWidth, H = cv.clientHeight;
     // Object regions exclude titles, legends and lower diagnostic charts.
     var regions;
-    if (name === 'chirality' || name === 'rings') regions = view.rects.slice(0, 2).map(function (r) {
+    if (name === 'chirality' || name === 'rings' || name === 'net') regions = view.rects.slice(0, 2).map(function (r) {
       return [r.x + 5, r.y + 55, r.w - 10, r.h - 82];
     });
     else if (name === 'analogy') {
@@ -223,6 +223,42 @@
     return counts;
   }
 
+  function netChecks(view) {
+    function click(id) { document.getElementById('nt-' + id).click(); view.draw(); }
+    function input(id, value, event) {
+      var el = document.getElementById('nt-' + id); el.value = value;
+      el.dispatchEvent(new Event(event || 'input')); view.draw();
+    }
+    input('cell', '7', 'change');
+    var poses = [0, 0.25, 0.5, 0.75, 1], expected = [[0, 0], [45, 0], [90, 0], [90, 45], [90, 90]];
+    var identity = true, rois = [];
+    poses.forEach(function (t, i) {
+      input('time', String(t));
+      var angles = view.snapshot().angles;
+      identity = identity && view.t === t && view.selected === 7 &&
+        Math.abs(angles.theta * 180 / Math.PI - expected[i][0]) < 1e-12 &&
+        Math.abs(angles.phi * 180 / Math.PI - expected[i][1]) < 1e-12;
+      rois.push(geometryPixels(view.canvas, view, 'net'));
+    });
+    check('NET controls retain identity and exact two-stage poses', identity, JSON.stringify(expected));
+    check('NET geometry in both object ROIs at five fold poses',
+      rois.every(function (row) { return row.every(function (n) { return Number.isFinite(n) && n >= 40; }); }), JSON.stringify(rois));
+    var rows = Array.from(document.querySelectorAll('#nt-pairs tbody tr'));
+    check('NET 24 visible face pairs close with 7 retained and 17 new',
+      rows.length === 24 && rows.every(function (r) { return parseFloat(r.cells[2].textContent) <= Net4.tolerance && /合$/.test(r.cells[2].textContent); }) &&
+      rows.filter(function (r) { return r.cells[1].textContent === '保留'; }).length === 7 &&
+      document.getElementById('nt-joined').textContent.includes('新接合 17/17'),
+      document.getElementById('nt-joined').textContent);
+    var before = JSON.stringify(view.snapshot());
+    input('mode', 'ortho', 'change'); input('yaw', '-70'); input('pitch', '30');
+    check('NET camera changes leave material evidence unchanged', JSON.stringify(view.snapshot()) === before, 'full snapshot');
+    click('home'); click('start'); click('play');
+    document.querySelector('.tab[data-view="analogy"]').click();
+    document.querySelector('.tab[data-view="net"]').click();
+    check('NET find-original and tab-switch pause', view.selected === 0 && view.t === 0 && !view.playing, 'cell A, t=0, paused');
+    input('mode', 'perspective', 'change'); input('yaw', '34.4'); input('pitch', '-20.1');
+  }
+
   window.addEventListener('load', function () {
     (async function () {
       var only = new URLSearchParams(location.search).get('only');
@@ -234,7 +270,8 @@
       }
       var views = {};
       [[AnalogyView, 'analogy'], [ProjectionView, 'projection'], [SliceView, 'slice'],
-        [PhysicsView, 'physics'], [LinkedView, 'linked'], [ChiralityView, 'chirality'], [RingsView, 'rings']].forEach(function (entry) {
+        [PhysicsView, 'physics'], [LinkedView, 'linked'], [ChiralityView, 'chirality'], [RingsView, 'rings'],
+        [NetView, 'net']].forEach(function (entry) {
         var draw = entry[0].prototype.draw;
         entry[0].prototype.draw = function () { views[entry[1]] = this; return draw.apply(this, arguments); };
       });
@@ -249,6 +286,7 @@
         await wait(900);
         var view = views[name];
         if (name === 'analogy') { view.spin = false; view.autoK = false; view.k = 0.2; view.draw(); }
+        if (name === 'net') netChecks(view);
         if (name === 'linked') {
           var p0 = pixel(view.slice);
           document.getElementById('linked-w').value = '3';
