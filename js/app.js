@@ -9,7 +9,8 @@
     analogy: document.getElementById('cv-analogy'),
     physics: document.getElementById('cv-physics'),
     linked: document.getElementById('cv-linked'),
-    linkedSlice: document.getElementById('cv-linked-slice')
+    linkedSlice: document.getElementById('cv-linked-slice'),
+    chirality: document.getElementById('cv-chirality')
   };
   var views = {};
   var current = 'analogy';
@@ -47,15 +48,27 @@
     views.linked = { error: '联动视图初始化失败：' + err.message };
     console.error(err);
   }
+  try {
+    views.chirality = new ChiralityView(canvases.chirality);
+  } catch (err) {
+    views.chirality = { error: '手性视图初始化失败：' + err.message };
+    console.error(err);
+  }
 
   /* 切片视图是逐像素 ray marching：每个像素要求几十次四维距离场，
      按 devicePixelRatio 全分辨率渲染在集显上会掉到个位数帧率。
      线框那两个视图是 Canvas 2D，反而需要高 dpr 才不毛糙。 */
   var SCALE = { projection: dpr, analogy: dpr, slice: Math.min(dpr, 1), physics: Math.min(dpr, 1),
-    linked: dpr, linkedSlice: Math.min(dpr, 1) };
+    linked: dpr, linkedSlice: Math.min(dpr, 1), chirality: dpr };
 
   function resize() {
+    stage.style.minHeight = '';
     var r = stage.getBoundingClientRect();
+    // 用实际画布宽度决定纵排高度，避免滚动条让 CSS 断点与画面断点错位。
+    if (current === 'chirality' && r.width < 680) {
+      stage.style.minHeight = '1240px';
+      r = stage.getBoundingClientRect();
+    }
     for (var k in canvases) {
       var cv = canvases[k], sc = SCALE[k];
       var linked = k === 'linked' || k === 'linkedSlice', stacked = window.innerWidth <= 640;
@@ -76,6 +89,7 @@
     if (views.slice) views.slice.keys = {};
     if (views.linked && views.linked.slice) views.linked.slice.keys = {};
     if (views.physics && views.physics.clearInput && !views.physics.error) views.physics.clearInput();
+    if (views.chirality && !views.chirality.error) views.chirality.clearInput();
     current = name;
     for (var k in canvases) {
       canvases[k].classList.toggle('active', k === name || (name === 'linked' && k === 'linkedSlice'));
@@ -91,6 +105,7 @@
     var inputCanvas = name === 'linked' ? canvases.linkedSlice : canvases[name];
     if (document.pointerLockElement && document.pointerLockElement !== inputCanvas) document.exitPointerLock();
     stage.classList.toggle('linked', name === 'linked');
+    stage.classList.toggle('chirality', name === 'chirality');
     resize();
   }
   Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (t) {
@@ -254,6 +269,80 @@
     document.getElementById('physics-xray').addEventListener('change', function () { ph.xray = this.checked; });
   } else if (ph && ph.error) {
     document.getElementById('physics-note').textContent = ph.error;
+  }
+
+  /* ---------- 手性：控件只改旋转角；误差始终由同一组材料坐标算出 ---------- */
+  var ch = views.chirality;
+  if (ch && !ch.error) {
+    var ce = {};
+    Array.prototype.forEach.call(document.querySelectorAll('[id^="ch-"]'), function (el) { ce[el.id.slice(3)] = el; });
+    ['xy', 'xz', 'yz'].forEach(function (plane) {
+      ce[plane].addEventListener('input', function () { ch.angles[plane] = Number(this.value) * Math.PI / 180; });
+    });
+    function pose3(xz) {
+      ch.angles = { xy: 0, xz: xz, yz: 0 };
+      ['xy', 'xz', 'yz'].forEach(function (p) { ce[p].value = ch.angles[p] * 180 / Math.PI; });
+    }
+    ce.best.addEventListener('click', function () { pose3(Math.PI); });
+    ce.reset3.addEventListener('click', function () { pose3(0); });
+    function pose4(angle) { ch.theta = angle; ch.playing = false; ce.angle.value = angle * 180 / Math.PI; }
+    ce.angle.addEventListener('input', function () { pose4(Number(this.value) * Math.PI / 180); });
+    ce.start.addEventListener('click', function () { pose4(0); });
+    ce.middle.addEventListener('click', function () { pose4(Math.PI / 2); });
+    ce.end.addEventListener('click', function () { pose4(Math.PI); });
+    ce.play.addEventListener('click', function () {
+      if (ch.theta === Math.PI) ch.theta = 0;
+      ch.playing = !ch.playing;
+    });
+    ce.camera.addEventListener('change', function () { ch.camera = this.value; });
+    ce.target.addEventListener('change', function () { ch.showTarget = this.checked; });
+    var pointCells = Chirality4.markers.map(function (m, i) {
+      var option = document.createElement('option'); option.value = i; option.textContent = m.id + ' · ' + m.name;
+      ce.marker.appendChild(option);
+      var row = ce.points.querySelector('tbody').insertRow();
+      row.insertCell().textContent = m.id + ' ' + m.name;
+      return [row.insertCell(), row.insertCell()];
+    });
+    ce.marker.addEventListener('change', function () { ch.selected = Number(this.value); });
+    ce.bound.textContent = (100 * Chirality4.lowerBound).toFixed(6) + '%';
+    function scientific(n) { return n.toExponential(2); }
+    function errorText(e) { return e < 1e-8 ? scientific(e) + '（浮点残差）' : (100 * e).toFixed(6) + '%'; }
+    function text(id, value) { if (ce[id].textContent !== value) ce[id].textContent = value; }
+    ch.onUpdate = function (s) {
+      text('det', '+' + s.det.toFixed(12));
+      text('volume', s.volume.toFixed(12));
+      text('distance', s.distance.toFixed(12));
+      text('projected', (s.projectedVolume / ch.initialVolume).toFixed(9));
+      text('volume-drift', scientific(s.volume - ch.initialVolume));
+      text('distance-drift', scientific(s.distance - Chirality4.referenceLength));
+      text('det-drift', scientific(s.det - 1));
+      text('error3', errorText(s.e3)); text('error4', errorText(s.e4));
+      text('angle-val', (ch.theta * 180 / Math.PI).toFixed(1) + '°');
+      ce.angle.value = ch.theta * 180 / Math.PI;
+      text('play', ch.playing ? '暂停' : ch.theta === Math.PI ? '重新播放' : '播放一次');
+      ['xy', 'xz', 'yz'].forEach(function (p) {
+        ce[p].value = ch.angles[p] * 180 / Math.PI;
+        text(p + '-val', (ch.angles[p] * 180 / Math.PI).toFixed(1) + '°');
+      });
+      pointCells.forEach(function (cells, i) {
+        [s.errors3[i], s.errors4[i]].forEach(function (error, j) {
+          var value = scientific(error / Chirality4.referenceLength);
+          if (cells[j].textContent !== value) cells[j].textContent = value;
+        });
+      });
+      var rows = [];
+      for (var r = 0; r < 4; r++) rows.push(s.r4.slice(r * 4, r * 4 + 4).map(function (v) {
+        return (v >= 0 ? ' ' : '') + v.toFixed(4);
+      }).join(' '));
+      text('matrix', rows.join('\n'));
+      text('status', ch.theta === Math.PI
+        ? '已匹配：所有材料点回到 w≈0；数学终点精确重合，读数保留浮点残差。'
+        : Math.abs(ch.theta - Math.PI / 2) < 0.04
+          ? '看下方两图：宽度转入 w，没有压扁。xyz 定向体积过零，材料体积不变。'
+          : '先试左边，再把 θ 推到 90° 和 180°；掌心 P 始终是同一个材料点。');
+    };
+  } else if (ch && ch.error) {
+    document.getElementById('ch-note').textContent = ch.error;
   }
 
   /* ---------- 类比视图控件 ---------- */

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>四维空间：三种画法与物理沙盒</title>
+<title>四维空间：三种画法、物理沙盒与手性实验</title>
 <style>
   :root {
     color-scheme: dark;
@@ -96,13 +96,37 @@
   .keys div:nth-child(even) { color: var(--dim); }
   .note { font-size: 12px; color: var(--dim); border-left: 2px solid var(--accent); padding-left: 10px; margin: 14px 0; }
   #fatal { display: none; padding: 12px; background: #3a1620; color: #ffc9d2; font: 12px ui-monospace, monospace; }
+  #stage.chirality { min-height: 780px; }
+  #stage #cv-chirality { touch-action: pan-y; }
+  #chirality-evidence {
+    display: none; position: absolute; top: 12px; left: 12px; right: 12px;
+    grid-template-columns: 1fr 1fr; gap: 6px 12px; pointer-events: none;
+    font-size: 11px; color: var(--dim);
+  }
+  #stage.chirality #chirality-evidence { display: grid; }
+  #chirality-evidence > div { background: var(--panel); border: 1px solid var(--line); padding: 5px 8px; }
+  #chirality-evidence output { display: block; font: 12px ui-monospace, monospace; color: var(--fg); }
+  #chirality-evidence #ch-det { color: var(--warn); }
+  #ch-matrix { font: 11px/1.6 ui-monospace, monospace; overflow-x: auto; }
+  #ch-points { width: 100%; font-size: 11px; border-collapse: collapse; }
+  #ch-points th, #ch-points td { text-align: right; padding: 3px; border-bottom: 1px solid var(--line); }
+  #ch-points th:first-child, #ch-points td:first-child { text-align: left; }
+  #ch-status { color: var(--warn); }
+  [data-view=chirality] fieldset { min-width: 0; }
+  [data-view=chirality] .btns { flex-wrap: wrap; }
+  [data-view=chirality] :focus-visible { outline: 2px solid var(--warn); outline-offset: 2px; }
+  @media (max-width: 860px) {
+    #stage.chirality #chirality-evidence {
+      position: sticky; top: 8px; left: auto; right: auto; margin: 12px; z-index: 1;
+    }
+  }
   a { color: var(--accent); }
 </style>
 </head>
 <body>
 
 <header>
-  <h1>四维空间：三种画法与物理沙盒</h1>
+  <h1>四维空间：三种画法与几何实验</h1>
   <span class="sub">第四个维度是空间维，不是时间</span>
   <nav>
     <button class="tab on" data-view="analogy">① 降维类比</button>
@@ -110,6 +134,7 @@
     <button class="tab" data-view="slice">③ 切片法 · 可走进去</button>
     <button class="tab" data-view="physics">④ 四维物理沙盒</button>
     <button class="tab" data-view="linked">⑤ 投影＋切片联动</button>
+    <button class="tab" data-view="chirality">⑥ 手性翻转</button>
   </nav>
 </header>
 
@@ -123,6 +148,13 @@
     <canvas id="cv-physics"></canvas>
     <canvas id="cv-linked" aria-label="共享场景的四维线框投影"></canvas>
     <canvas id="cv-linked-slice" aria-label="共享场景的第一人称切片"></canvas>
+    <canvas id="cv-chirality" aria-label="带材料点标号的左右手匹配：三维对照、四维路径、xw 轨迹及 yzw 补充投影"></canvas>
+    <div id="chirality-evidence">
+      <div>四维行列式 det(R₄)<output id="ch-det"></output></div>
+      <div>材料体积（四面体）<output id="ch-volume"></output></div>
+      <div>完整四维距离 |AB|₄<output id="ch-distance"></output></div>
+      <div>xyz 定向体积比<output id="ch-projected"></output></div>
+    </div>
     <div id="linked-slice-title" class="linked-overlay">第一人称切片 · 点击锁定鼠标</div>
     <div id="linked-crosshair" class="linked-overlay">+</div>
     <div id="linked-readout" class="linked-overlay" role="status"></div>
@@ -383,6 +415,74 @@
         WASD 行走，Q/E 改 w，Space/C 升降，Z/X、R/F 转动超平面，Shift 加速，Esc 解锁。
       </div>
     </section>
+    <!-- 材料身份与度量必须和投影同时可查，不能只留下一个翻转动画。 -->
+    <section class="panel" data-view="chirality">
+      <h2>⑥ 左手变右手：不是翻图片</h2>
+      <p id="ch-note">有厚度的刚性积木手，掌心一颗红标、手背两颗蓝标。蓝虚线是固定右手目标；
+        实点与空圈必须同号重合，不能把掌心换成手背。标号穿透遮挡显示，不是表面贴图。</p>
+
+      <fieldset>
+        <legend>先试三维：三个角覆盖任意 SO(3)</legend>
+        <div class="row"><label for="ch-xy">xy 旋转</label><input id="ch-xy" type="range" min="-180" max="180" step="0.1" value="0"><output class="val" id="ch-xy-val">0°</output></div>
+        <div class="row"><label for="ch-xz">xz 旋转</label><input id="ch-xz" type="range" min="-180" max="180" step="0.1" value="0"><output class="val" id="ch-xz-val">0°</output></div>
+        <div class="row"><label for="ch-yz">yz 旋转</label><input id="ch-yz" type="range" min="-180" max="180" step="0.1" value="0"><output class="val" id="ch-yz-val">0°</output></div>
+        <div class="btns"><button id="ch-best">三维最佳姿态</button><button id="ch-reset3">重置三维</button></div>
+        <p>失配 <output id="ch-error3"></output><br>可证明下界 <output id="ch-bound"></output>，不是搜索失败的猜测。</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>再走四维：只有 xw 旋转</legend>
+        <div class="row"><label for="ch-angle">θ</label><input id="ch-angle" type="range" min="0" max="180" step="0.1" value="0"><output class="val" id="ch-angle-val">0°</output></div>
+        <div class="btns">
+          <button id="ch-play">播放一次</button><button id="ch-start">0°</button>
+          <button id="ch-middle">停在 90°</button><button id="ch-end">180°</button>
+        </div>
+        <p>失配 <output id="ch-error4"></output>（完整四维距离，含 w，不是像素差）</p>
+        <p id="ch-status" role="status"></p>
+      </fieldset>
+
+      <div class="row"><label for="ch-camera">共同观察相机</label><select id="ch-camera"><option value="oblique">斜看厚度</option><option value="front">正看掌心</option><option value="back">从背后看</option></select></div>
+      <div class="row"><label for="ch-target">目标虚线</label><input id="ch-target" type="checkbox" checked></div>
+      <div class="row"><label for="ch-marker">追踪材料点</label><select id="ch-marker"></select></div>
+      <p>观察相机只改变画法，不改变姿态或失配。也可直接拖动三维画面旋转；
+        四维画面从左到右横拖对应 0°→180°。触屏上下滑仍可滚页。</p>
+
+      <fieldset>
+        <legend>这几个量不许变</legend>
+        <div class="keys">
+          <div>体积漂移</div><output id="ch-volume-drift"></output>
+          <div>距离漂移</div><output id="ch-distance-drift"></output>
+          <div>det(R₄) − 1</div><output id="ch-det-drift"></output>
+        </div>
+        <p>上方体积是 A、B、W、P 四个固定材料点张成的四面体体积，不是整个手的体积。
+          B 的三列是这四点的差向量。90° 时只有 xyz 投影塌成二维，材料空间转进 yzw，距离与体积不变。</p>
+      </fieldset>
+
+      <details open>
+        <summary>逐点核对：同号点的距离</summary>
+        <table id="ch-points"><thead><tr><th>材料点</th><th>三维 / L</th><th>四维 / L</th></tr></thead><tbody></tbody></table>
+        <p>失配 e = √(Σ‖pᵢ−目标ᵢ‖₄² / 10) / L，L = 初始 |AB| = 1.2。
+          不重新配点；两组质心已对齐，任何额外平移只会增加误差。百分数是归一化距离，不是成功概率。</p>
+      </details>
+
+      <fieldset>
+        <legend>正在使用的 R₄（行 / 列：x y z w）</legend>
+        <pre id="ch-matrix"></pre>
+        <p><b>det(R₄) = +1 全程成立。</b>运动只调用 xw 旋转，没有缩放、形变或镜像指令。
+          固定目标在起点预先作镜像，之后不动。</p>
+        <p>终点 <b>diag(−1,1,1,−1)</b> 同时翻转 x 和 w，四维行列式仍为 +1。
+          只有限制到 w=0 超平面，才是三维的 diag(−1,1,1)，行列式 −1。</p>
+      </fieldset>
+      <div class="note">
+        三维刚体运动保持四个具名点的定向体积，镜像却改变其符号；
+        所以不仅这三个滑块的某些姿态不行，而是整个 SO(3) 都不行。<br><br>
+        当前材料点协方差 C 满足 C ≥ λI，故 e ≥ 2√λ/L；“三维最佳姿态”恰好达到此下界，
+        轮廓虽像，P 与 D 仍错位。<br><br>
+        两幅手形都是投影，不是 w=0 截面，也不是真实四维视觉。
+        投影重叠不等于材料穿透：任意两材料点的完整四维距离始终不变。
+        <a href="docs/intuition-research.md">A01 完整推导</a>
+      </div>
+    </section>
   </aside>
 </main>
 
@@ -391,11 +491,13 @@
 <script src="js/physics4.js"></script>
 <script src="js/collide4.js"></script>
 <script src="js/scene4.js"></script>
+<script src="js/chirality4.js"></script>
 <script src="js/view-projection.js"></script>
 <script src="js/view-slice.js"></script>
 <script src="js/view-linked.js"></script>
 <script src="js/view-analogy.js"></script>
 <script src="js/view-physics.js"></script>
+<script src="js/view-chirality.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

@@ -393,6 +393,9 @@ function browser() {
       addEventListener: function (name, fn) { (listeners[name] || (listeners[name] = [])).push(fn); },
       emit: function (name, e) { (listeners[name] || []).forEach(function (fn) { fn.call(this, e || {}); }, this); },
       setPointerCapture: function () {}, blur: function () { env.document.activeElement = null; },
+      appendChild: function () {}, insertRow: function () { return element('row'); },
+      insertCell: function () { return element('cell'); },
+      querySelector: function (selector) { assert(selector === 'tbody', 'supported table selector'); return element('tbody'); },
       getBoundingClientRect: function () { return { width: env.innerWidth > 860 ? 1000 : env.innerWidth, height: 700 }; }
     };
   }
@@ -415,8 +418,15 @@ function browser() {
   env.innerWidth = 1300; env.devicePixelRatio = 1; env.window = env;
   env.console = { log: function () {}, error: function (err) { errors.push(err); } };
   env.performance = { now: function () { return 0; } };
+  env.getComputedStyle = function () {
+    return { getPropertyValue: function (name) {
+      var value = html.match(new RegExp(name + ':\\s*(#[0-9a-f]+)'));
+      assert(value, 'existing CSS variable'); return value[1];
+    } };
+  };
   env.requestAnimationFrame = function (fn) { env.tick = fn; };
   env.document = element('document');
+  env.document.createElement = function (tag) { return element(tag); };
   env.document.getElementById = function (id) { assert(nodes[id], 'existing DOM id: ' + id); return nodes[id]; };
   env.document.exitPointerLock = function () { env.document.pointerLockElement = null; };
   var tabs = [], panels = [];
@@ -439,7 +449,12 @@ function browser() {
     var node = element(match[3]); node.dataset.view = match[3];
     (match[2] === 'tab' ? tabs : panels).push(node);
   });
-  env.document.querySelectorAll = function (selector) { return selector === '.tab' ? tabs : panels; };
+  env.document.querySelectorAll = function (selector) {
+    if (selector === '.tab') return tabs;
+    if (selector === '.panel') return panels;
+    assert(selector === '[id^="ch-"]', 'supported DOM selector');
+    return Object.keys(nodes).filter(function (id) { return id.indexOf('ch-') === 0; }).map(function (id) { return nodes[id]; });
+  };
   vm.createContext(env);
   Array.from(html.matchAll(/<script src="([^"]+)"><\/script>/g)).forEach(function (match) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', match[1]), 'utf8'), env, { filename: match[1] });
@@ -484,6 +499,20 @@ test('application wiring: linked movement, sliders, tab cleanup, resize and fram
   near(gl.uniforms.uCam[0], 0, 1e-12, 'switch clears held input');
   env.innerWidth = 600; env.emit('resize');
   assert(nodes['cv-linked-slice'].style.left === '0' && nodes['cv-linked-slice'].style.top === '350px', 'stacked on narrow screen');
+  assert(b.tabs.length === 6 && b.tabs[5].dataset.view === 'chirality', 'chirality is the sixth tab');
+  select('chirality'); frame(1);
+  assert(nodes['cv-chirality'].classList.contains('active') && !nodes['cv-linked'].classList.contains('active'), 'isolated sixth canvas');
+  nodes['ch-best'].emit('click'); frame(1);
+  near(parseFloat(nodes['ch-error3'].textContent), 17.888544, 1e-6, 'wired best 3D pose remains mismatched');
+  nodes['ch-middle'].emit('click'); frame(1);
+  near(Number(nodes['ch-volume'].textContent), 0.048, 1e-12, 'wired invariant at 90 degrees');
+  assert(nodes['ch-angle-val'].textContent === '90.0°', 'middle button stops exactly at 90');
+  nodes['ch-end'].emit('click'); frame(1);
+  assert(parseFloat(nodes['ch-error4'].textContent) < 1e-15, 'wired endpoint matches');
+  nodes['ch-start'].emit('click'); nodes['ch-play'].emit('click'); frame(1);
+  var angle = nodes['ch-angle-val'].textContent;
+  select('analogy'); frame(5); select('chirality'); frame(1);
+  assert(nodes['ch-angle-val'].textContent === angle, 'tab switch stops chirality playback');
   assert(b.errors.length === 0, 'no runtime failures during live frames');
 });
 
