@@ -12,7 +12,8 @@
     linkedSlice: document.getElementById('cv-linked-slice'),
     chirality: document.getElementById('cv-chirality'),
     rings: document.getElementById('cv-rings'),
-    net: document.getElementById('cv-net')
+    net: document.getElementById('cv-net'),
+    simplex: document.getElementById('cv-simplex')
   };
   var views = {};
   var current = 'analogy';
@@ -88,12 +89,18 @@
     views.net = { error: '八胞折叠初始化失败：' + err.message };
     console.error(err);
   }
+  try {
+    views.simplex = new SimplexView(canvases.simplex);
+  } catch (err) {
+    views.simplex = { error: '等距点初始化失败：' + err.message };
+    console.error(err);
+  }
 
   /* 切片视图是逐像素 ray marching：每个像素要求几十次四维距离场，
      按 devicePixelRatio 全分辨率渲染在集显上会掉到个位数帧率。
      线框那两个视图是 Canvas 2D，反而需要高 dpr 才不毛糙。 */
   var SCALE = { projection: dpr, analogy: dpr, slice: Math.min(dpr, 1), physics: Math.min(dpr, 1),
-    linked: dpr, linkedSlice: Math.min(dpr, 1), chirality: dpr, rings: dpr, net: dpr };
+    linked: dpr, linkedSlice: Math.min(dpr, 1), chirality: dpr, rings: dpr, net: dpr, simplex: dpr };
 
   function resize() {
     stage.style.minHeight = '';
@@ -113,6 +120,11 @@
     }
     if (current === 'net' && r.width < 680) {
       stage.style.minHeight = '1300px';
+      r = stage.getBoundingClientRect();
+    }
+    if (current === 'simplex') {
+      stage.style.minHeight = r.width < 680 ? '1150px' : '890px';
+      document.getElementById('simplex-distances').style.top = r.width < 680 ? '780px' : '516px';
       r = stage.getBoundingClientRect();
     }
     for (var k in canvases) {
@@ -156,6 +168,7 @@
     stage.classList.toggle('chirality', name === 'chirality');
     stage.classList.toggle('rings', name === 'rings');
     stage.classList.toggle('net', name === 'net');
+    stage.classList.toggle('simplex', name === 'simplex');
     resize();
     showViewError();
   }
@@ -515,6 +528,66 @@
     };
   } else if (nt && nt.error) {
     document.getElementById('nt-note').textContent = nt.error;
+  }
+
+  /* ---------- 等距点：材料读数与投影分离，揭示答案不冒充迁移通过 ---------- */
+  var sx = views.simplex;
+  if (sx && !sx.error) {
+    var se = {}, distanceRows = [];
+    Array.prototype.forEach.call(document.querySelectorAll('[id^="sx-"]'), function (el) { se[el.id.slice(3)] = el; });
+    function simplexText(id, text) { if (se[id].textContent !== text) se[id].textContent = text; }
+    ['x', 'y', 'z', 'w'].forEach(function (axis, i) {
+      se[axis].addEventListener('input', function () { sx.setCoordinate(i, Number(this.value)); });
+    });
+    se.best.addEventListener('click', function () { sx.best(); });
+    se.center.addEventListener('click', function () { sx.center(); });
+    se.unlock.addEventListener('change', function () { sx.unlock(this.checked); });
+    se.positive.addEventListener('click', function () { sx.reveal(1); });
+    se.negative.addEventListener('click', function () { sx.reveal(-1); });
+    ['size', 'rotation', 'low'].forEach(function (kind) {
+      se[kind].addEventListener('click', function () { sx.startChallenge(kind); se.prediction.value = ''; });
+    });
+    se.check.addEventListener('click', function () { sx.checkTransfer(se.prediction.value); });
+    se.mode.addEventListener('change', function () { sx.mode = this.value; });
+    se.yaw.addEventListener('input', function () { sx.camYaw = Number(this.value) * Math.PI / 180; });
+    se.pitch.addEventListener('input', function () { sx.camPitch = Number(this.value) * Math.PI / 180; });
+    sx.onUpdate = function (s) {
+      var m = s.model, evidence = s.evidence, body = se.table.querySelector('tbody');
+      while (distanceRows.length > evidence.rows.length) { body.deleteRow(-1); distanceRows.pop(); }
+      while (distanceRows.length < evidence.rows.length) {
+        var row = body.insertRow(); distanceRows.push([row.insertCell(), row.insertCell(), row.insertCell()]);
+      }
+      function label(i) { return i === m.dimension + 1 ? 'P' : 'ABCD'[i]; }
+      evidence.rows.forEach(function (row, i) {
+        var values = [label(row.a) + label(row.b), row.distance.toFixed(12), (100 * row.error).toFixed(6) + '%'];
+        values.forEach(function (value, j) { if (distanceRows[i][j].textContent !== value) distanceRows[i][j].textContent = value; });
+      });
+      ['x', 'y', 'z', 'w'].forEach(function (axis, i) {
+        se[axis].min = -3.5 * sx.size; se[axis].max = 3.5 * sx.size;
+        se[axis].step = 0.001 * sx.size; se[axis].value = sx.p[i];
+        se[axis].disabled = i > m.dimension || i === m.dimension && !sx.unlocked;
+        simplexText(axis + '-val', sx.p[i].toFixed(4));
+      });
+      se.unlock.checked = sx.unlocked;
+      simplexText('unlock-label', m.dimension === 3 ? '开放 w' : '开放 z');
+      simplexText('task', m.dimension === 3
+        ? '固定四面体 ABCD，移动第五点 P，让十条点对距离全部等于基底边长 L。先只用 x/y/z，再开放 w。'
+        : '低维重做：固定 xy 平面内的三角形 ABC，移动第四点 P，让六条点对距离全部等于边长 L。先只用 x/y，再开放 z；w 始终锁定。');
+      simplexText('best', m.dimension === 3 ? '最佳三维姿态' : '最佳平面位置');
+      simplexText('caption', (m.dimension === 3 ? '全部十条' : '全部六条') + '点对 · 真实四维距离（不是屏幕长度）');
+      simplexText('target', 'L=' + m.edge.toFixed(6) + ' · R=' + m.radius.toFixed(6) + ' · 尺寸 s=' + sx.size.toFixed(2));
+      simplexText('error', '当前 E=' + (100 * evidence.maxError).toFixed(6) + '% · ' +
+        (m.dimension === 3 ? '三维' : '平面') + '全局下界 ' + (100 * s.bound).toFixed(6) + '%');
+      simplexText('status', evidence.exact ? '机器精度精确解：全部点对等长。' : evidence.success ? '近似达标（≤1%），不是精确等距。'
+        : sx.unlocked ? '尚未达标；必须同时匹配基底边长。' : '额外方向锁定：误差不可能降到零。');
+      simplexText('points', evidence.points.map(function (p, i) {
+        return label(i) + '=(' + p.map(function (v) { return v.toFixed(6); }).join(', ') + ')';
+      }).join('\n'));
+      simplexText('feedback', sx.feedback);
+      simplexText('progress', ['size', 'rotation', 'low'].map(function (kind, i) {
+        return ['尺寸', '旋转', '低维'][i] + '：' + (sx.completed[kind] ? '通过' : '待完成');
+      }).join(' · '));
+    };
   }
 
   /* ---------- 类比视图控件 ---------- */

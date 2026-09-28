@@ -199,7 +199,7 @@
     var W = cv.clientWidth, H = cv.clientHeight;
     // Object regions exclude titles, legends and lower diagnostic charts.
     var regions;
-    if (name === 'chirality' || name === 'rings' || name === 'net') regions = view.rects.slice(0, 2).map(function (r) {
+    if (name === 'chirality' || name === 'rings' || name === 'net' || name === 'simplex') regions = view.rects.slice(0, 2).map(function (r) {
       return [r.x + 5, r.y + 55, r.w - 10, r.h - 82];
     });
     else if (name === 'analogy') {
@@ -259,6 +259,74 @@
     input('mode', 'perspective', 'change'); input('yaw', '34.4'); input('pitch', '-20.1');
   }
 
+  function simplexChecks(view) {
+    function click(id) { document.getElementById('sx-' + id).click(); view.draw(); }
+    function input(id, value, event) {
+      var el = document.getElementById('sx-' + id); el.value = value;
+      el.dispatchEvent(new Event(event || 'input')); view.draw();
+    }
+    function unlock() {
+      var el = document.getElementById('sx-unlock'); el.checked = true; el.dispatchEvent(new Event('change')); view.draw();
+    }
+    function manuallyPlace() {
+      unlock();
+      ['x', 'y', 'z'].slice(0, view.dimension).forEach(function (a) { input(a, '0'); });
+      var m = view.model(); input(view.dimension === 3 ? 'w' : 'z', Math.sqrt(m.edge * m.edge - m.radius * m.radius));
+    }
+    function rowsMatch() {
+      var rows = Array.from(document.querySelectorAll('#sx-table tbody tr')), s = view.snapshot();
+      return rows.length === s.evidence.rows.length && rows.every(function (r, i) {
+        var pair = s.evidence.rows[i], points = s.evidence.points;
+        var d = Math.hypot.apply(Math, points[pair.a].map(function (x, j) { return x - points[pair.b][j]; }));
+        return Math.abs(Number(r.cells[1].textContent) - d) <= 5.1e-13 &&
+          Math.abs(parseFloat(r.cells[2].textContent) - 100 * (d / s.model.edge - 1)) <= 5.1e-7;
+      });
+    }
+    click('best');
+    check('SIMPLEX best button attains global 3D bound while w stays locked',
+      Math.abs(view.snapshot().evidence.maxError - (3 * Math.sqrt(6) - 2) / 20) < 1e-15 &&
+      document.getElementById('sx-w').disabled, document.getElementById('sx-error').textContent);
+    click('center'); var center = view.snapshot().evidence.maxError;
+    click('positive'); var plus = view.snapshot().evidence;
+    var correctRows = rowsMatch();
+    click('negative');
+    check('SIMPLEX both exact signs and ten independently measured DOM rows',
+      center > 0.38 && plus.exact && view.snapshot().evidence.exact && correctRows && rowsMatch() &&
+      document.querySelectorAll('#sx-table tbody tr').length === 10, document.getElementById('sx-status').textContent);
+    var before = JSON.stringify(view.snapshot());
+    input('mode', 'perspective', 'change'); input('yaw', '-70'); input('pitch', '30');
+    check('SIMPLEX camera cannot alter real distance evidence', JSON.stringify(view.snapshot()) === before && rowsMatch(), 'full snapshot');
+    click('size'); unlock(); input('x', '0'); input('y', '0'); input('z', '0'); input('w', Math.sqrt(5));
+    input('prediction', 'pythagoras', 'change'); click('check'); var rejectsOld = !view.completed.size;
+    manuallyPlace(); click('check'); var acceptsManual = view.completed.size;
+    click('size'); click('positive'); input('prediction', 'pythagoras', 'change'); click('check');
+    check('SIMPLEX size transfer rejects memorized height and revealed answer, accepts manual placement',
+      rejectsOld && acceptsManual && !view.completed.size && /不计通过/.test(view.feedback), view.feedback);
+    var original = JSON.stringify(view.model().base), originalHeight = Simplex4.exact(view.model(), 1)[3];
+    click('rotation'); manuallyPlace(); input('prediction', 'same', 'change'); click('check');
+    check('SIMPLEX rotation changes material base but not exact w at fixed size',
+      original !== JSON.stringify(view.model().base) && Simplex4.exact(view.model(), 1)[3] === originalHeight &&
+      view.completed.rotation && rowsMatch(), view.feedback);
+    click('low'); click('best'); var lowError = view.snapshot().evidence.maxError;
+    manuallyPlace(); input('prediction', 'pythagoras', 'change'); click('check');
+    check('SIMPLEX low-dimensional transfer has six distances and z unlock, never w',
+      Math.abs(lowError - (3 * Math.sqrt(3) - 1) / 13) < 1e-15 && view.completed.low &&
+      document.getElementById('sx-w').disabled && !document.getElementById('sx-z').disabled &&
+      document.querySelectorAll('#sx-table tbody tr').length === 6 && rowsMatch(), view.feedback);
+    input('x', '0.17'); input('y', '-0.23');
+    check('SIMPLEX live sliders update material coordinates and the distance table',
+      Math.abs(view.p[0] - Number(document.getElementById('sx-x').value)) < 1e-12 &&
+      Math.abs(view.p[1] - Number(document.getElementById('sx-y').value)) < 1e-12 &&
+      !view.snapshot().evidence.success && rowsMatch(), JSON.stringify(view.p));
+    click('rotation'); input('mode', 'ortho', 'change'); input('yaw', '34.4'); input('pitch', '-14.3');
+    var rois = [];
+    ['best', 'center', 'positive', 'negative'].forEach(function (id) {
+      click(id); rois.push(geometryPixels(view.canvas, view, 'simplex'));
+    });
+    check('SIMPLEX material geometry and normal ruler survive pixel negative controls',
+      rois.every(function (r) { return r.every(function (n) { return Number.isFinite(n) && n >= 40; }); }), JSON.stringify(rois));
+  }
+
   window.addEventListener('load', function () {
     (async function () {
       var only = new URLSearchParams(location.search).get('only');
@@ -271,7 +339,7 @@
       var views = {};
       [[AnalogyView, 'analogy'], [ProjectionView, 'projection'], [SliceView, 'slice'],
         [PhysicsView, 'physics'], [LinkedView, 'linked'], [ChiralityView, 'chirality'], [RingsView, 'rings'],
-        [NetView, 'net']].forEach(function (entry) {
+        [NetView, 'net'], [SimplexView, 'simplex']].forEach(function (entry) {
         var draw = entry[0].prototype.draw;
         entry[0].prototype.draw = function () { views[entry[1]] = this; return draw.apply(this, arguments); };
       });
@@ -287,6 +355,7 @@
         var view = views[name];
         if (name === 'analogy') { view.spin = false; view.autoK = false; view.k = 0.2; view.draw(); }
         if (name === 'net') netChecks(view);
+        if (name === 'simplex') simplexChecks(view);
         if (name === 'linked') {
           var p0 = pixel(view.slice);
           document.getElementById('linked-w').value = '3';

@@ -50,6 +50,36 @@ function killed(result, evidence) {
 const gpu = (id) => ['tools/verify-render.js', '--require-browser', '--only=' + id];
 const cases = [
   ...[
+    { name: 'normal solution hardcoded to wrong height', file: 'js/simplex4.js', selector: 'SIMPLEX exact',
+      evidence: /SIMPLEX exact normal height/,
+      before: 'sign * Math.sqrt(model.edge * model.edge - model.radius * model.radius)', after: 'sign * 2' },
+    { name: 'screen lengths replace real distance ledger', file: 'js/view-simplex.js', selector: 'SIMPLEX projection',
+      evidence: /SIMPLEX true screen-independent ledger/,
+      before: 'var evidence = S.measure(model, this.p);',
+      after: `var evidence = S.measure(model, this.p), self = this;
+    evidence.rows.forEach(function (row) {
+      var rect = { x: 0, y: 0, w: 900, h: 360 };
+      var a = self.project(evidence.points[row.a], rect), b = self.project(evidence.points[row.b], rect);
+      row.distance = Math.hypot(a[0] - b[0], a[1] - b[1]);
+      row.error = (row.distance - model.edge) / model.edge;
+    });` },
+    { name: 'centroid error mistaken for global lower bound', file: 'js/simplex4.js', selector: 'SIMPLEX bounds',
+      evidence: /SIMPLEX closed lower bound/,
+      before: 'return (1 - rho) / (4 * rho - 1);', after: 'return 1 - rho;' }
+  ].map(c => ({
+    id: 'SIMPLEX', name: c.name, baseline: '79c8363',
+    // 基线没有第九页。向历史测试快照装入同一份待测模块，保留真实旧断言；
+    // before 证明的是新增功能的覆盖缺口，不伪称历史上存在错误的 simplex 实现。
+    prepare(dir) {
+      for (const file of ['js/simplex4.js', 'js/view-simplex.js']) {
+        fs.writeFileSync(path.join(dir, file), fs.readFileSync(path.join(ROOT, file)));
+      }
+    },
+    oldArgs: ['-e', "global.window=global;require('./js/m4.js');require('./js/simplex4.js');require('./js/view-simplex.js');require('./test/math4.test.js');"],
+    args: ['test/simplex4.test.js', c.selector], evidence: c.evidence,
+    mutate(dir) { return replace(dir, c.file, c.before, c.after); }
+  })),
+  ...[
     { name: 'hinge replaced by endpoint lerp', selector: 'NET rigidity', evidence: /NET rigid pair/,
       before: 'c = Math.cos(angle), s = Math.sin(angle)',
       after: 'c = 1 - Math.abs(angle) / (Math.PI / 2), s = angle / (Math.PI / 2)' },
@@ -171,6 +201,7 @@ try {
         snapshot(dir, ref); baselines.set(ref, dir);
       }
       const old = baselines.get(ref);
+      if (c.prepare) c.prepare(old);
       for (const [dir, args] of [[old, c.oldArgs], [after, c.args]]) {
         const key = dir + JSON.stringify(args);
         if (!controls.has(key)) { success(run(dir, args), 'Unmutated positive control failed'); controls.add(key); }

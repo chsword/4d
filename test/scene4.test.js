@@ -411,7 +411,7 @@ function browser() {
       addEventListener: function (name, fn) { (listeners[name] || (listeners[name] = [])).push(fn); },
       emit: function (name, e) { (listeners[name] || []).forEach(function (fn) { fn.call(this, e || {}); }, this); },
       setPointerCapture: function () {}, blur: function () { env.document.activeElement = null; },
-      appendChild: function () {}, insertRow: function () { return element('row'); },
+      appendChild: function () {}, insertRow: function () { return element('row'); }, deleteRow: function () {},
       insertCell: function () { return element('cell'); },
       querySelector: function (selector) { assert(selector === 'tbody', 'supported table selector'); return element('tbody'); },
       getBoundingClientRect: function () { return { width: env.innerWidth > 860 ? 1000 : env.innerWidth, height: 700 }; }
@@ -470,7 +470,7 @@ function browser() {
   env.document.querySelectorAll = function (selector) {
     if (selector === '.tab') return tabs;
     if (selector === '.panel') return panels;
-    assert(['[id^="ch-"]', '[id^="rg-"]', '[id^="nt-"]'].includes(selector), 'supported DOM selector');
+    assert(['[id^="ch-"]', '[id^="rg-"]', '[id^="nt-"]', '[id^="sx-"]'].includes(selector), 'supported DOM selector');
     var prefix = selector.slice(6, 9);
     return Object.keys(nodes).filter(function (id) { return id.indexOf(prefix) === 0; }).map(function (id) { return nodes[id]; });
   };
@@ -518,8 +518,8 @@ test('application wiring: linked movement, sliders, tab cleanup, resize and fram
   near(gl.uniforms.uCam[0], 0, 1e-12, 'switch clears held input');
   env.innerWidth = 600; env.emit('resize');
   assert(nodes['cv-linked-slice'].style.left === '0' && nodes['cv-linked-slice'].style.top === '350px', 'stacked on narrow screen');
-  assert(b.tabs.length === 8 && b.tabs[5].dataset.view === 'chirality' && b.tabs[6].dataset.view === 'rings' &&
-    b.tabs[7].dataset.view === 'net', 'chirality remains sixth; rings seventh; net eighth');
+  assert(b.tabs.length === 9 && b.tabs[5].dataset.view === 'chirality' && b.tabs[6].dataset.view === 'rings' &&
+    b.tabs[7].dataset.view === 'net' && b.tabs[8].dataset.view === 'simplex', 'existing order retained; simplex ninth');
   select('chirality'); frame(1);
   assert(nodes['cv-chirality'].classList.contains('active') && !nodes['cv-linked'].classList.contains('active'), 'isolated sixth canvas');
   nodes['ch-best'].emit('click'); frame(1);
@@ -578,6 +578,27 @@ test('application wiring: linked movement, sliders, tab cleanup, resize and fram
   var netTime = nodes['nt-time-val'].textContent;
   select('projection'); frame(1); select('net'); frame(1);
   assert(nodes['nt-time-val'].textContent === netTime, 'tab switch pauses net');
+  select('simplex'); frame(1);
+  assert(nodes['cv-simplex'].classList.contains('active') && !nodes['cv-net'].classList.contains('active'), 'isolated ninth canvas');
+  assert(nodes['sx-w'].disabled, 'starts with only xyz controls');
+  nodes['sx-best'].emit('click'); frame(1);
+  assert(nodes['sx-error'].textContent.includes('26.742346%'), 'wired corrected global minimum');
+  nodes['sx-center'].emit('click'); frame(1);
+  assert(nodes['sx-error'].textContent.includes('38.762756%'), 'centroid is explicitly worse');
+  nodes['sx-positive'].emit('click'); frame(1);
+  assert(nodes['sx-status'].textContent.includes('机器精度精确解'), 'wired analytic solution');
+  var metric = nodes['sx-error'].textContent, coords = nodes['sx-points'].textContent;
+  nodes['sx-mode'].value = 'perspective'; nodes['sx-mode'].emit('change'); frame(1);
+  assert(nodes['sx-error'].textContent === metric && nodes['sx-points'].textContent === coords, 'camera is not metric');
+  nodes['sx-size'].emit('click'); frame(1);
+  assert(nodes['sx-w'].disabled && !nodes['sx-unlock'].checked, 'new transfer resets and relocks');
+  nodes['sx-low'].emit('click'); frame(1);
+  assert(nodes['sx-z'].disabled && nodes['sx-w'].disabled && nodes['sx-task'].textContent.includes('六条'), 'low version consistently starts in plane');
+  nodes['sx-unlock'].checked = true; nodes['sx-unlock'].emit('change'); frame(1);
+  assert(!nodes['sx-z'].disabled && nodes['sx-w'].disabled, 'only z opens for triangle');
+  nodes['sx-negative'].emit('click'); frame(1);
+  nodes['sx-prediction'].value = 'pythagoras'; nodes['sx-check'].emit('click'); frame(1);
+  assert(nodes['sx-feedback'].textContent.includes('不计通过'), 'revealed low-dimensional answer not a transfer pass');
   assert(b.errors.length === 0, 'no runtime failures during live frames');
 });
 

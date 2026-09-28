@@ -153,6 +153,24 @@
   #nt-point { display: block; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 ui-monospace, monospace; }
   #nt-pairs { width: 100%; border-collapse: collapse; font-size: 11px; }
   #nt-pairs td, #nt-pairs th { border-bottom: 1px solid var(--line); padding: 4px 2px; text-align: left; }
+  #stage.simplex { min-height: 890px; }
+  #stage #cv-simplex { touch-action: pan-y; }
+  #simplex-evidence, #simplex-distances { display: none; position: absolute; left: 12px; right: 12px; }
+  #stage.simplex #simplex-evidence, #stage.simplex #simplex-distances { display: block; }
+  #simplex-evidence { top: 12px; padding: 10px; background: var(--panel); border: 1px solid var(--line); font-size: 12px; }
+  #simplex-evidence output { display: block; font: 12px/1.6 ui-monospace, monospace; overflow-wrap: anywhere; }
+  #sx-status, #sx-feedback { color: var(--warn); }
+  #simplex-distances { top: 516px; background: var(--panel); padding: 8px; border: 1px solid var(--line); }
+  #sx-table { width: 100%; border-collapse: collapse; font: 12px/1.5 ui-monospace, monospace; }
+  #sx-table caption { text-align: left; color: var(--dim); }
+  #sx-table td, #sx-table th { text-align: right; border-bottom: 1px solid var(--line); padding: 3px; }
+  #sx-table td:first-child, #sx-table th:first-child { text-align: left; }
+  [data-view=simplex] fieldset { min-width: 0; }
+  [data-view=simplex] .btns { flex-wrap: wrap; }
+  [data-view=simplex] select { min-width: 0; max-width: 100%; }
+  [data-view=simplex] :focus-visible { outline: 2px solid var(--warn); outline-offset: 2px; }
+  #sx-points { display: block; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 ui-monospace, monospace; }
+  button:disabled { cursor: default; opacity: .5; }
   a { color: var(--accent); }
 </style>
 </head>
@@ -170,6 +188,7 @@
     <button class="tab" data-view="chirality">⑥ 手性翻转</button>
     <button class="tab" data-view="rings">⑦ 刚性双环分离</button>
     <button class="tab" data-view="net">⑧ 超立方体八胞折叠</button>
+    <button class="tab" data-view="simplex">⑨ 第五个等距点</button>
   </nav>
 </header>
 
@@ -186,6 +205,20 @@
     <canvas id="cv-chirality" aria-label="带材料点标号的左右手匹配：三维对照、四维路径、xw 轨迹及 yzw 补充投影"></canvas>
     <canvas id="cv-rings" aria-label="刚性双环：三维接触对照、四维分离、最近材料点的 xw 尺与连续距离下界"></canvas>
     <canvas id="cv-net" aria-label="八个固定编号立方体的四维刚性折叠、胞内材料点、本地尺及逐面接缝残差"></canvas>
+    <canvas id="cv-simplex" aria-label="固定材料点 ABCD 与第五点 P 的投影；另列法向坐标尺，距离以四维坐标为准"></canvas>
+    <div id="simplex-evidence">
+      <b>第五个等距点 —— 为什么需要第四个方向</b>
+      <output id="sx-target"></output>
+      <output id="sx-error"></output>
+      <output id="sx-status"></output>
+    </div>
+    <div id="simplex-distances">
+      <table id="sx-table">
+        <caption id="sx-caption">全部十条点对 · 真实四维距离（不是屏幕长度）</caption>
+        <thead><tr><th>材料点对</th><th>d₄</th><th>(d₄−L)/L</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
     <div id="net-evidence">
       <div>固定材料身份<output id="nt-identity"></output></div>
       <div>两阶段进度<output id="nt-angles"></output></div>
@@ -667,6 +700,68 @@
         <p><a href="docs/intuition-research.md">A03 推导与取舍</a></p>
       </details>
     </section>
+    <section class="panel" data-view="simplex">
+      <h2>⑨ 第五个等距点 —— 为什么需要第四个方向</h2>
+      <p id="sx-task">固定基底不能动。请移动 P，让<b>十条点对距离全部相同</b>。先只用 x/y/z；
+        不是让四条新增距离彼此相同就算成功，它们还必须等于基底边长 L。</p>
+      <fieldset>
+        <legend>先撞到低一维的墙</legend>
+        <div class="row"><label for="sx-x">x</label><input id="sx-x" type="range" min="-3.5" max="3.5" step="0.001" value="0.7"><output id="sx-x-val" class="val"></output></div>
+        <div class="row"><label for="sx-y">y</label><input id="sx-y" type="range" min="-3.5" max="3.5" step="0.001" value="-0.4"><output id="sx-y-val" class="val"></output></div>
+        <div class="row"><label for="sx-z">z</label><input id="sx-z" type="range" min="-3.5" max="3.5" step="0.001" value="0.3"><output id="sx-z-val" class="val"></output></div>
+        <div class="row"><label for="sx-w">w</label><input id="sx-w" type="range" min="-3.5" max="3.5" step="0.001" value="0" disabled><output id="sx-w-val" class="val"></output></div>
+        <div class="btns"><button id="sx-best" type="button">最佳三维姿态</button><button id="sx-center" type="button">对比质心</button></div>
+        <div class="row"><label for="sx-unlock" id="sx-unlock-label">开放 w</label><input id="sx-unlock" type="checkbox"></div>
+        <div class="btns"><button id="sx-positive" type="button">揭示正向精确解</button><button id="sx-negative" type="button">揭示负向精确解</button></div>
+        <p>滑块在有限窗口内便于操作；下界证明适用于<b>整个</b>三维空间，不是只在滑块范围内试不出来。
+          手动误差 ≤1% 只算近似达标；机器精度精确解另行标注。</p>
+      </fieldset>
+      <fieldset>
+        <legend>迁移检查 · 不背 w=2.236</legend>
+        <div class="btns"><button id="sx-size" type="button">换尺寸</button><button id="sx-rotation" type="button">转动基四面体</button><button id="sx-low" type="button">重做低维版本</button></div>
+        <p>每题重置 P、锁住额外方向。先预测，再自己开放方向并放置。
+          低维题是 xy 平面内三角形→三维四面体，w 始终锁定。</p>
+        <label for="sx-prediction">预测：换尺寸 / 低维题选高度规则；旋转题选高度是否改变</label>
+        <select id="sx-prediction">
+          <option value="">请选择预测</option>
+          <option value="pythagoras">|h| = √(L²−R²)，R 是基底外接半径</option>
+          <option value="fixed">始终 |h| = √5</option>
+          <option value="same">纯 SO(3) 旋转后，高度不变</option>
+          <option value="changed">纯 SO(3) 旋转后，高度改变</option>
+        </select>
+        <div class="btns"><button id="sx-check" type="button">检查预测和当前位置</button></div>
+        <p id="sx-feedback" role="status" aria-live="polite"></p>
+        <output id="sx-progress"></output>
+        <p>看过精确解的本题不计通过，重新出题即可。旋转真的改变 ABCD 的坐标；
+          不过绕原点的 SO(3) 不改变质心和 w 解，不能伪称每次换姿态都要换 w。</p>
+      </fieldset>
+      <fieldset>
+        <legend>相机不是移动材料点</legend>
+        <div class="row"><label for="sx-mode">4D→3D</label><select id="sx-mode"><option value="ortho">正交丢 w</option><option value="perspective">受控透视</option></select></div>
+        <div class="row"><label for="sx-yaw">水平角</label><input id="sx-yaw" type="range" min="-180" max="180" step="0.1" value="34.3775"></div>
+        <div class="row"><label for="sx-pitch">俯仰角</label><input id="sx-pitch" type="range" min="-65" max="65" step="0.1" value="-14.3239"></div>
+        <p>沿用投影视图的水平/俯仰与三维透视约定。正交丢 w 时两个精确解和质心的影子相同；
+          法向尺只画一个坐标，不是在三维里硬塞第四根轴。</p>
+      </fieldset>
+      <details><summary>固定材料身份 · 完整坐标</summary><output id="sx-points"></output></details>
+      <details>
+        <summary>闭式下界：为什么不是质心的 38.75%？</summary>
+        <p>目标 E=max |dᵢ/L−1|。质心误差是 1−√(3/8)=38.7628%，
+          但不是真正最优；沿某个顶点的反方向越过对面后，能平衡一条偏长和三条偏短。</p>
+        <p>三维全局下界 E*=(3√6−2)/20=26.7423%，最优位置 p=−4E*vⱼ。
+          三条距离为 L(1−E*)，另一条为 L(1+E*)，所以仍然不等距。
+          低维平面下界为 (3√3−1)/13=32.2781%。</p>
+        <p>证明不靠搜索：令 n=基点数，qᵢ=dᵢ²，m=平均 qᵢ。
+          材料坐标恒等式给出 F=Σ(qᵢ−m)²−2L²(m−R²)=0。
+          若 E≤e&lt;1，则 qᵢ∈[L²(1−e)²,L²(1+e)²]。F 是凸函数，最大值在这个盒子的顶点。
+          k 条取上端时，nF/(2L⁴)=(8k(n−k)−n)e²−2(2k−n)e−(n+1)/2。
+          枚举 k=0…n，在上述下界之前全部为负；k=1 最先到零，且 p=−4E*vⱼ 取到它。</p>
+        <p>“最大化最短距离”并不等价：走向无穷远时最短距离也趋于无穷。
+          同时让四条新距离完全相等才强制投影在质心；默认坐标下平方差给出
+          y+z=x+z=x+y=0，继而 3+w²=8。</p>
+        <p><a href="docs/intuition-research.md">A04 依据</a> · <a href="README.md">推导、缩放及 cell5 同构验证</a></p>
+      </details>
+    </section>
   </aside>
 </main>
 
@@ -679,6 +774,7 @@
 <script src="js/chirality4.js"></script>
 <script src="js/rings4.js"></script>
 <script src="js/net4.js"></script>
+<script src="js/simplex4.js"></script>
 <script src="js/view-projection.js"></script>
 <script src="js/view-slice.js"></script>
 <script src="js/view-linked.js"></script>
@@ -687,6 +783,7 @@
 <script src="js/view-chirality.js"></script>
 <script src="js/view-rings.js"></script>
 <script src="js/view-net.js"></script>
+<script src="js/view-simplex.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>
